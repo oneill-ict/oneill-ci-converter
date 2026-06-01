@@ -151,7 +151,7 @@ function parseInvoiceText(text) {
 
     // Try primary split; fall back to bestQtyPrice immediately if it doesn't check out
     let { qty, price } = parseQtyPrice(m[7], lineTotal, lineDiscount);
-    if (Math.abs(round2(qty * price - lineDiscount) - lineTotal) > 0.02) {
+    if (Math.abs(round2(qty * price - lineDiscount) - lineTotal) > 0.01) {
       ({ qty, price } = bestQtyPrice(m[7], lineTotal, lineDiscount));
     }
 
@@ -174,7 +174,7 @@ function parseInvoiceText(text) {
   if (!totalOk || !qtyOk) {
     for (const item of invoice.items) {
       const computed = round2(item.quantity * item.pricePerPiece - item.discount);
-      if (Math.abs(computed - item.total) > 0.02) {
+      if (Math.abs(computed - item.total) > 0.01) {
         const fixed = bestQtyPrice(item._combined, item.total, item.discount);
         repairs.push({
           itemNo: item.itemNo, item: item.item, colour: item.colour,

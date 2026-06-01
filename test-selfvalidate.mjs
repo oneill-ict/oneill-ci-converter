@@ -95,7 +95,7 @@ for (let i = 0; i < itemStarts.length; i++) {
   const lineDiscount = parseEuropeanNumber(m[8]);
   const lineTotal    = parseEuropeanNumber(m[9]);
   let { qty, price } = parseQtyPrice(m[7], lineTotal, lineDiscount);
-  if (Math.abs(round2(qty * price - lineDiscount) - lineTotal) > 0.02) {
+  if (Math.abs(round2(qty * price - lineDiscount) - lineTotal) > 0.01) {
     ({ qty, price } = bestQtyPrice(m[7], lineTotal, lineDiscount));
   }
   items.push({ itemNo: m[1], item, colour, qty, price, discount: lineDiscount, total: lineTotal, _combined: m[7] });
@@ -107,6 +107,32 @@ if (missedRows.length > 0) {
 } else {
   console.log("\n── Missed rows: none ──");
 }
+
+// Diagnostic: rows where qty*price ≠ lineTotal (before repair)
+console.log("\n── Rows where |qty×price - total| > 0.01 ──");
+let suspectCount = 0;
+for (const it of items) {
+  const computed = round2(it.qty * it.price - it.discount);
+  const diff = Math.abs(computed - it.total);
+  if (diff > 0.01) {
+    suspectCount++;
+    console.log(`  ✗ ${it.itemNo} "${it.item}" "${it.colour}" combined="${it._combined}" qty=${it.qty} price=${it.price} disc=${it.discount} → computed=${computed} total=${it.total} diff=${round2(diff)}`);
+  }
+}
+if (suspectCount === 0) console.log("  (none)");
+
+// Diagnostic: all rows with qty > 1
+console.log("\n── Rows with qty > 1 ──");
+let bigQtyCount = 0;
+for (const it of items) {
+  if (it.qty > 1) {
+    bigQtyCount++;
+    const computed = round2(it.qty * it.price - it.discount);
+    const ok = Math.abs(computed - it.total) < 0.01;
+    console.log(`  ${ok?"✓":"✗"} ${it.itemNo} "${it.item}" "${it.colour}" combined="${it._combined}" qty=${it.qty} price=${it.price} total=${it.total}`);
+  }
+}
+if (bigQtyCount === 0) console.log("  (none)");
 
 // ── STEP 2 — Validate ────────────────────────────────────────────────────────
 let parsedQty   = items.reduce((s, i) => s + i.qty, 0);
@@ -121,7 +147,7 @@ if (!totalOk || !qtyOk) {
   console.log("\n── Repairing mismatches ──");
   for (const item of items) {
     const computed = round2(item.qty * item.price - item.discount);
-    if (Math.abs(computed - item.total) > 0.02) {
+    if (Math.abs(computed - item.total) > 0.01) {
       const fixed = bestQtyPrice(item._combined, item.total, item.discount);
       console.log(`  ↻ ${item.itemNo} "${item.item}" "${item.colour}" combined="${item._combined}" qty ${item.qty}→${fixed.qty} price ${item.price}→${fixed.price}`);
       repairs.push({ itemNo: item.itemNo, oldQty: item.qty, oldPrice: item.price, newQty: fixed.qty, newPrice: fixed.price });
@@ -146,4 +172,16 @@ console.log(`\n${valid ? "✅ SELF-VALIDATED — safe to push" : "❌ VALIDATION
 if (!valid) {
   console.log(`  delta qty:   ${parsedQty - (expectedQty||0)}`);
   console.log(`  delta total: ${round2(parsedTotal - (expectedTotal||0))} CHF`);
+
+  // Top-5 rows with largest |qty*price - total| after repair
+  console.log("\n── Top-5 largest discrepancies after repair ──");
+  const diffs = items.map(it => ({
+    itemNo: it.itemNo, item: it.item, colour: it.colour,
+    combined: it._combined, qty: it.qty, price: it.price,
+    total: it.total, discount: it.discount,
+    diff: Math.abs(round2(it.qty * it.price - it.discount) - it.total),
+  })).sort((a, b) => b.diff - a.diff).slice(0, 5);
+  for (const d of diffs) {
+    console.log(`  ${d.itemNo} "${d.item}" "${d.colour}" combined="${d.combined}" qty=${d.qty} price=${d.price} disc=${d.discount} total=${d.total} diff=${d.diff}`);
+  }
 }
