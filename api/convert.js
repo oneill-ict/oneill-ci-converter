@@ -45,7 +45,7 @@ function parseInvoiceText(text) {
 
   // Header fields — search full text (no reliable line breaks)
   const dateM        = /Date:\s*([\d\-]+)/.exec(text);
-  const orderM       = /Order number:\s*([\d,]+)/.exec(text);
+  const orderM       = /Order number:\s*([\d,]+)/i.exec(text);
   const deliveryM    = /Delivery terms:\s*(\S+)/.exec(text);
   const boxesM       = /Number of boxes:\s*(\d+)/.exec(text);
   const weightM      = /Gross weight:\s*([\d.,]+ gr)/.exec(text);
