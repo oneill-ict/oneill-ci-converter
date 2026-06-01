@@ -72,7 +72,7 @@ const expectedTotal = gtM ? parseEuropeanNumber(gtM[2]) : null;
 console.log(`PDF summary: expectedQty=${expectedQty}, expectedTotal=${expectedTotal}`);
 
 // ── STEP 1 — Parse (per-item slice approach) ─────────────────────────────────
-const fieldRe = /(\d{7})(.+?)(?<=[a-z]) *(\d{4,5})(.+?)(\d{10})\s*([\d.,]+)\s*gr\s*([\d,. ]+?)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/;
+const fieldRe = /(\d{7})(.+?)(?<=[a-zA-Z]) *(\d{4,5})(.+?)(\d{10})\s*([\d.,]+)\s*gr\s*([\d,. ]+?)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/;
 
 const itemStarts = [];
 for (const c of itemsText.matchAll(/(?<!\d)(\d{7})(?!\d)/g)) {

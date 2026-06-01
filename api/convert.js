@@ -123,7 +123,7 @@ function parseInvoiceText(text) {
   // Field regex (no /g flag — runs once per item slice).
   // \s* between tariff code and weight handles PDF column spaces/newlines.
   // [\d,. ]+? for qty+price allows spaces and period thousands-separators.
-  const fieldRe = /(\d{7})(.+?)(?<=[a-z]) *(\d{4,5})(.+?)(\d{10})\s*([\d.,]+)\s*gr\s*([\d,. ]+?)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/;
+  const fieldRe = /(\d{7})(.+?)(?<=[a-zA-Z]) *(\d{4,5})(.+?)(\d{10})\s*([\d.,]+)\s*gr\s*([\d,. ]+?)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/;
 
   // Locate all candidate item-number positions
   const itemStarts = [];
