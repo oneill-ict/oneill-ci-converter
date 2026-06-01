@@ -12,109 +12,84 @@ function parseEuropeanNumber(s) {
 }
 
 function splitItemColour(combined) {
-  const words = combined.trim().split(/\s+/);
-  let splitIdx = words.length;
-  for (let i = 1; i < words.length; i++) {
-    // Colour name starts with uppercase then lowercase (Title Case)
-    if (/^[A-Z][a-z]/.test(words[i])) {
-      splitIdx = i;
-      break;
-    }
+  // Fields are concatenated without separator, e.g. "BRENDA STRUCTURED SHIRTPale Lavender"
+  // Item name = ALL CAPS (and digits/apostrophes), colour = Title Case (Uppercase then lowercase)
+  // Split at: uppercase letter that is preceded by a non-lowercase and followed by uppercase+lowercase
+  const idx = combined.search(/(?<=[A-Z0-9\-'&])(?=[A-Z][a-z])/);
+  if (idx > 0) {
+    return { item: combined.slice(0, idx).trim(), colour: combined.slice(idx).trim() };
   }
-  return {
-    item: words.slice(0, splitIdx).join(" "),
-    colour: words.slice(splitIdx).join(" "),
-  };
+  return { item: combined.trim(), colour: "" };
+}
+
+function extractCountry(groupCountry) {
+  // e.g. "BlousesIndia" or "Dresses & JumpsuitsBangladesh" or "FootwearChina"
+  // Country starts where a lowercase letter is followed by an uppercase letter
+  const idx = groupCountry.search(/(?<=[a-z])(?=[A-Z])/);
+  if (idx > 0) return groupCountry.slice(idx).trim();
+  return groupCountry.trim();
 }
 
 function parseInvoiceText(text) {
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-
   const invoice = {
     date: "",
     orderNumber: "",
     deliveryTerms: "",
-    vatNumber: "",
     numberOfBoxes: "",
     grossWeight: "",
     billingName: "",
     billingAddress: [],
     items: [],
-    goodsTotalQty: 0,
-    goodsTotalAmount: 0,
-    subtotal: 0,
     vat: 0,
-    total: 0,
   };
 
-  // Header fields
-  for (const line of lines) {
-    if (/^Date:\s*/i.test(line))            invoice.date          = line.replace(/^Date:\s*/i, "").trim();
-    if (/^Order number:\s*/i.test(line))    invoice.orderNumber   = line.replace(/^Order number:\s*/i, "").trim();
-    if (/^Delivery terms:\s*/i.test(line))  invoice.deliveryTerms = line.replace(/^Delivery terms:\s*/i, "").trim();
-    if (/^Number of boxes:\s*/i.test(line)) invoice.numberOfBoxes = line.replace(/^Number of boxes:\s*/i, "").trim();
-    if (/^Gross weight:\s*/i.test(line))    invoice.grossWeight   = line.replace(/^Gross weight:\s*/i, "").trim();
-    // Second "VAT number:" is the customer's (billing party)
-    if (/^VAT number:\s*/i.test(line) && !invoice.date) {
-      // skip — first VAT number is O'Neill's own
-    }
+  // Header fields — search full text (no reliable line breaks)
+  const dateM        = /Date:\s*([\d\-]+)/.exec(text);
+  const orderM       = /Order number:\s*([\d,]+)/.exec(text);
+  const deliveryM    = /Delivery terms:\s*(\S+)/.exec(text);
+  const boxesM       = /Number of boxes:\s*(\d+)/.exec(text);
+  const weightM      = /Gross weight:\s*([\d.,]+ gr)/.exec(text);
+
+  if (dateM)     invoice.date          = dateM[1].trim();
+  if (orderM)    invoice.orderNumber   = orderM[1].trim();
+  if (deliveryM) invoice.deliveryTerms = deliveryM[1].trim();
+  if (boxesM)    invoice.numberOfBoxes = boxesM[1].trim();
+  if (weightM)   invoice.grossWeight   = weightM[1].trim();
+
+  // Billing address: text between "Billing address" and "O'Neill"
+  const billingBlock = /Billing address\s+([\s\S]+?)O'Neill/i.exec(text);
+  if (billingBlock) {
+    const addrLines = billingBlock[1].trim().split(/\n/).map(l => l.trim()).filter(Boolean);
+    invoice.billingName    = addrLines[0] || "";
+    invoice.billingAddress = addrLines.slice(1);
   }
 
-  // Billing address: lines between "Billing address" and "O'Neill"
-  let inBilling = false;
-  for (const line of lines) {
-    if (/^Billing address$/i.test(line)) { inBilling = true; continue; }
-    if (inBilling) {
-      if (/^O'Neill/i.test(line)) break;
-      if (invoice.billingName === "") invoice.billingName = line;
-      else invoice.billingAddress.push(line);
-    }
-  }
+  // Line items — match on full text using aaneengeplakte structuur:
+  // {7digits}{item+colour}{4-5digits}{itemgroup+country}{10digits}{weight,xx} gr{qty}{price,xx} CHF{discount,xx} CHF{total,xx} CHF
+  const lineRe = /(\d{7})(.+?)(\d{4,5})(.+?)(\d{10})([\d.,]+)\s*gr\s*(\d+)\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/g;
 
-  // Line items regex:
-  // {7digits} {item+colour} {4-5digits} {itemgroup+country} {10digits} {weight},00 gr {qty} {price},xx CHF {discount},xx CHF {total},xx CHF
-  const lineRe = /^(\d{7})\s+(.+?)\s+(\d{4,5})\s+(.+?)\s+(\d{10})\s+([\d.]+,\d{2})\s+gr\s+(\d+)\s+([\d.]+,\d{2})\s+CHF\s+([\d.]+,\d{2})\s+CHF\s+([\d.]+,\d{2})\s+CHF/;
-
-  for (const line of lines) {
-    const m = lineRe.exec(line);
-    if (!m) continue;
-
+  for (const m of text.matchAll(lineRe)) {
     const { item, colour } = splitItemColour(m[2]);
-    // Country is the last word of group 4 (item group + country)
-    const countryWords = m[4].trim().split(/\s+/);
-    const country = countryWords[countryWords.length - 1];
+    const country = extractCountry(m[4]);
 
     invoice.items.push({
-      itemNo:       m[1],
+      itemNo:        m[1],
       item,
       colour,
-      colourNo:     m[3],
+      colourNo:      m[3],
       country,
-      tariffNo:     m[5],
-      grossWeight:  parseEuropeanNumber(m[6]),
-      quantity:     parseInt(m[7], 10),
+      tariffNo:      m[5],
+      grossWeight:   parseEuropeanNumber(m[6]),
+      quantity:      parseInt(m[7], 10),
       pricePerPiece: parseEuropeanNumber(m[8]),
-      discount:     parseEuropeanNumber(m[9]),
-      total:        parseEuropeanNumber(m[10]),
+      discount:      parseEuropeanNumber(m[9]),
+      total:         parseEuropeanNumber(m[10]),
     });
   }
 
-  // Summary totals
-  for (const line of lines) {
-    const goodsM = /^Goods total\s+([\d]+)\s+([\d.,]+)\s+CHF/i.exec(line);
-    if (goodsM) {
-      invoice.goodsTotalQty    = parseInt(goodsM[1], 10);
-      invoice.goodsTotalAmount = parseEuropeanNumber(goodsM[2]);
-    }
-    const subM = /^Subtotal\s+([\d.,]+)\s+CHF/i.exec(line);
-    if (subM) invoice.subtotal = parseEuropeanNumber(subM[1]);
-
-    const vatM = /^VAT\s+([\d.,]+)\s+CHF/i.exec(line);
-    if (vatM) invoice.vat = parseEuropeanNumber(vatM[1]);
-
-    const totalM = /^Total\s+([\d.,]+)\s+CHF/i.exec(line);
-    if (totalM) invoice.total = parseEuropeanNumber(totalM[1]);
-  }
+  // VAT — search full text
+  const vatM = /\bVAT\s+([\d.,]+)\s*CHF/.exec(text);
+  if (vatM) invoice.vat = parseEuropeanNumber(vatM[1]);
 
   return invoice;
 }
@@ -357,18 +332,11 @@ export default async function handler(req, res) {
     return res.status(422).json({ error: `PDF kon niet worden gelezen: ${e.message}` });
   }
 
-  const rawText = pdfData.text;
-  console.log("=== PDF RAW TEXT ===\n" + rawText);
-
-  const invoice = parseInvoiceText(rawText);
+  const invoice = parseInvoiceText(pdfData.text);
 
   if (invoice.items.length === 0) {
-    // Return raw text preview so we can debug the parser
-    const preview = rawText.split("\n").slice(0, 80).join("\n");
     return res.status(422).json({
       error: "Geen factuurregels gevonden. Controleer of dit een O'Neill Commercial Invoice is.",
-      debug_raw_text_first80lines: preview,
-      debug_total_chars: rawText.length,
     });
   }
 
