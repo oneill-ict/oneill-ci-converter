@@ -468,6 +468,16 @@ export default async function handler(req, res) {
 
   const v = invoice._validation;
   if (v && !v.valid) {
+    const allRows = invoice.items.map(it => ({
+      itemNo:    it.itemNo,
+      item:      it.item,
+      colour:    it.colour,
+      qty:       it.quantity,
+      price:     it.pricePerPiece,
+      discount:  it.discount,
+      total:     it.total,
+      calcTotal: round2(it.quantity * it.pricePerPiece - it.discount),
+    }));
     return res.status(422).json({
       error: "Validatie mislukt na herstel",
       parsedQty:     v.parsedQty,
@@ -476,6 +486,7 @@ export default async function handler(req, res) {
       expectedTotal: v.expectedTotal,
       missedRows:    v.missedRows,
       repairs:       v.repairs,
+      allRows,
     });
   }
 
