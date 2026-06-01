@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: "Inter", sans-serif;
+  background: #071520;
+  color: #E0EEF2;
+  min-height: 100vh;
+}
+
+@keyframes waveScroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-color: #2A4457; }
+  50%       { border-color: #26B5A8; }
+}
+
+.animate-fade-in { animation: fadeIn 0.25s ease-out both; }
+.animate-pulse-border { animation: pulse-border 2s ease-in-out infinite; }
