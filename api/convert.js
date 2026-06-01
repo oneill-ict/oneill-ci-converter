@@ -12,14 +12,31 @@ function parseEuropeanNumber(s) {
 }
 
 function splitItemColour(combined) {
-  // Fields are concatenated without separator, e.g. "BRENDA STRUCTURED SHIRTPale Lavender"
-  // Item name = ALL CAPS (and digits/apostrophes), colour = Title Case (Uppercase then lowercase)
-  // Split at: uppercase letter that is preceded by a non-lowercase and followed by uppercase+lowercase
-  const idx = combined.search(/(?<=[A-Z0-9\-'&])(?=[A-Z][a-z])/);
-  if (idx > 0) {
-    return { item: combined.slice(0, idx).trim(), colour: combined.slice(idx).trim() };
-  }
+  // Item name is ALL CAPS + digits/punctuation; colour starts with TitleCase.
+  // Split at first position where UPPERCASE/digit/punct transitions to TitleCase word.
+  const idx = combined.search(/(?<=[A-Z0-9\-'"&\s])(?=[A-Z][a-z])/);
+  if (idx > 0) return { item: combined.slice(0, idx).trim(), colour: combined.slice(idx).trim() };
   return { item: combined.trim(), colour: "" };
+}
+
+function parseQtyPrice(combined, totalCHF, discountCHF = 0) {
+  // combined = qty digits + price digits concatenated, e.g. "330,39" or "1721,70"
+  // Use total to validate the correct split: qty * price = total + discount (line-item discount)
+  const commaIdx = combined.indexOf(",");
+  if (commaIdx < 0) return { qty: parseInt(combined, 10), price: 0 };
+  const intPart      = combined.slice(0, commaIdx);
+  const decPart      = combined.slice(commaIdx + 1);
+  const round2       = (n) => Math.round(n * 100) / 100;
+  const expectedProd = round2(totalCHF + discountCHF);
+
+  for (let qLen = 1; qLen < intPart.length; qLen++) {
+    const priceInt = intPart.slice(qLen);
+    if (!priceInt || priceInt[0] === "0") continue;
+    const qty   = parseInt(intPart.slice(0, qLen), 10);
+    const price = parseFloat(`${priceInt}.${decPart}`);
+    if (Math.abs(round2(qty * price) - expectedProd) < 0.02) return { qty, price };
+  }
+  return { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`) };
 }
 
 function extractCountry(groupCountry) {
@@ -40,6 +57,7 @@ function parseInvoiceText(text) {
     billingName: "",
     billingAddress: [],
     items: [],
+    invoiceDiscount: 0,
     vat: 0,
   };
 
@@ -64,14 +82,17 @@ function parseInvoiceText(text) {
     invoice.billingAddress = addrLines.slice(1);
   }
 
-  // Line items — match on full text using aaneengeplakte structuur:
-  // {7digits}{item+colour}{4-5digits}{itemgroup+country}{10digits}{weight,xx} gr{qty}{price,xx} CHF{discount,xx} CHF{total,xx} CHF
-  // Non-greedy qty + price starting with non-zero digit separates e.g. "330,39" → qty=3, price=30,39
-  const lineRe = /(\d{7})(.+?)(\d{4,5})(.+?)(\d{10})([\d.,]+)\s*gr\s*(\d+?)([1-9][\d]*,\d{2})\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/g;
+  // Line items — colour_no anchored on lowercase lookbehind to skip numbers in item names
+  // (e.g. "1952" in "O'RIGINALS 1952 T-SHIRT" won't match because it's not preceded by lowercase)
+  // qty+price extracted as one group; split via total-based disambiguation
+  const lineRe = /(\d{7})(.+?)(?<=[a-z])(\d{4,5})(.+?)(\d{10})([\d.,]+)\s*gr\s*([\d,]+)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/g;
 
   for (const m of text.matchAll(lineRe)) {
     const { item, colour } = splitItemColour(m[2]);
-    const country = extractCountry(m[4]);
+    const country          = extractCountry(m[4]);
+    const lineDiscount     = parseEuropeanNumber(m[8]);
+    const lineTotal        = parseEuropeanNumber(m[9]);
+    const { qty, price }   = parseQtyPrice(m[7], lineTotal, lineDiscount);
 
     invoice.items.push({
       itemNo:        m[1],
@@ -81,15 +102,19 @@ function parseInvoiceText(text) {
       country,
       tariffNo:      m[5],
       grossWeight:   parseEuropeanNumber(m[6]),
-      quantity:      parseInt(m[7], 10),
-      pricePerPiece: parseEuropeanNumber(m[8]),
-      discount:      parseEuropeanNumber(m[9]),
-      total:         parseEuropeanNumber(m[10]),
+      quantity:      qty,
+      pricePerPiece: price,
+      discount:      lineDiscount,
+      total:         lineTotal,
     });
   }
 
-  // VAT — search full text
-  const vatM = /\bVAT\s+([\d.,]+)\s*CHF/.exec(text);
+  // Invoice-level discount (between Goods total and Subtotal)
+  const invDiscM = /Discount\s+([\d.,]+)\s*CHF/i.exec(text);
+  if (invDiscM) invoice.invoiceDiscount = parseEuropeanNumber(invDiscM[1]);
+
+  // VAT
+  const vatM = /VAT\s+([\d.,]+)\s*CHF/i.exec(text);
   if (vatM) invoice.vat = parseEuropeanNumber(vatM[1]);
 
   return invoice;
@@ -176,7 +201,8 @@ async function buildExcel(invoice) {
   });
   const goodsTotalQty    = invoice.items.reduce((s, it) => s + it.quantity, 0);
   const goodsTotalAmount = round2(invoice.items.reduce((s, it) => s + it._total, 0));
-  const grandTotal       = round2(goodsTotalAmount + invoice.vat);
+  const invoiceDiscount  = invoice.invoiceDiscount || 0;
+  const grandTotal       = round2(goodsTotalAmount - invoiceDiscount + invoice.vat);
 
   invoice.items.forEach((item, idx) => {
     const r = DATA_START + idx;
@@ -214,19 +240,31 @@ async function buildExcel(invoice) {
   amtSum.value  = { formula: `SUM(K${DATA_START}:K${lastDataRow})`, result: goodsTotalAmount };
   amtSum.numFmt = "#,##0.00"; amtSum.font = boldFont; amtSum.alignment = { horizontal: "right" };
 
-  const stRow  = summaryStart + 1;
+  const hasDiscount = invoiceDiscount > 0;
+  const discRow = hasDiscount ? summaryStart + 1 : null;
+  if (hasDiscount) {
+    setCell(discRow, 1, "Discount", { font: boldFont });
+    const dCell    = ws.getCell(discRow, 11);
+    dCell.value    = invoiceDiscount;
+    dCell.numFmt   = "#,##0.00"; dCell.font = boldFont; dCell.alignment = { horizontal: "right" };
+  }
+
+  const stRow  = summaryStart + (hasDiscount ? 2 : 1);
   setCell(stRow, 1, "Subtotal", { font: boldFont });
   const stCell = ws.getCell(stRow, 11);
-  stCell.value  = { formula: `K${gtRow}`, result: goodsTotalAmount };
+  const subtotalResult = round2(goodsTotalAmount - invoiceDiscount);
+  stCell.value  = hasDiscount
+    ? { formula: `K${gtRow}-K${discRow}`, result: subtotalResult }
+    : { formula: `K${gtRow}`, result: goodsTotalAmount };
   stCell.numFmt = "#,##0.00"; stCell.font = boldFont; stCell.alignment = { horizontal: "right" };
 
-  const vatRow = summaryStart + 2;
+  const vatRow = summaryStart + (hasDiscount ? 3 : 2);
   setCell(vatRow, 1, "VAT", { font: boldFont });
   const vatCell = ws.getCell(vatRow, 11);
   vatCell.value  = invoice.vat;
   vatCell.numFmt = "#,##0.00"; vatCell.font = boldFont; vatCell.alignment = { horizontal: "right" };
 
-  const totRow = summaryStart + 3;
+  const totRow = summaryStart + (hasDiscount ? 4 : 3);
   setCell(totRow, 1, "Total", { font: boldFont });
   const totCell2    = ws.getCell(totRow, 11);
   totCell2.value    = { formula: `K${stRow}+K${vatRow}`, result: grandTotal };
