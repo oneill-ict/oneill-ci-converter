@@ -169,6 +169,15 @@ async function buildExcel(invoice) {
 
   const DATA_START = 18;
 
+  // Pre-calculate all totals (needed as formula results for Excel caching)
+  const round2 = (n) => Math.round(n * 100) / 100;
+  invoice.items.forEach(item => {
+    item._total = round2(item.quantity * item.pricePerPiece - item.discount);
+  });
+  const goodsTotalQty    = invoice.items.reduce((s, it) => s + it.quantity, 0);
+  const goodsTotalAmount = round2(invoice.items.reduce((s, it) => s + it._total, 0));
+  const grandTotal       = round2(goodsTotalAmount + invoice.vat);
+
   invoice.items.forEach((item, idx) => {
     const r = DATA_START + idx;
 
@@ -183,12 +192,12 @@ async function buildExcel(invoice) {
     setCell(r, 9, item.pricePerPiece, { numFmt: "#,##0.00", alignment: { horizontal: "right" } });
     setCell(r, 10, item.discount,     { numFmt: "#,##0.00", alignment: { horizontal: "right" } });
 
-    // Total — formula: Qty × Price − Discount
-    const totCell      = ws.getCell(r, 11);
-    totCell.value      = { formula: `H${r}*I${r}-J${r}` };
-    totCell.numFmt     = "#,##0.00";
-    totCell.font       = hFont;
-    totCell.alignment  = { horizontal: "right" };
+    // Total — formula with pre-calculated result so cache is populated
+    const tc    = ws.getCell(r, 11);
+    tc.value    = { formula: `H${r}*I${r}-J${r}`, result: item._total };
+    tc.numFmt   = "#,##0.00";
+    tc.font     = hFont;
+    tc.alignment = { horizontal: "right" };
   });
 
   // ── Summary rows ──────────────────────────────────────────────────────
@@ -198,35 +207,36 @@ async function buildExcel(invoice) {
 
   const gtRow = summaryStart;
   setCell(gtRow, 1, "Goods total", { font: boldFont });
-  const qtySum     = ws.getCell(gtRow, 8);
-  qtySum.value     = { formula: `SUM(H${DATA_START}:H${lastDataRow})` };
-  qtySum.numFmt    = "#,##0"; qtySum.font = boldFont; qtySum.alignment = { horizontal: "right" };
-  const amtSum     = ws.getCell(gtRow, 11);
-  amtSum.value     = { formula: `SUM(K${DATA_START}:K${lastDataRow})` };
-  amtSum.numFmt    = "#,##0.00"; amtSum.font = boldFont; amtSum.alignment = { horizontal: "right" };
+  const qtySum  = ws.getCell(gtRow, 8);
+  qtySum.value  = { formula: `SUM(H${DATA_START}:H${lastDataRow})`, result: goodsTotalQty };
+  qtySum.numFmt = "#,##0"; qtySum.font = boldFont; qtySum.alignment = { horizontal: "right" };
+  const amtSum  = ws.getCell(gtRow, 11);
+  amtSum.value  = { formula: `SUM(K${DATA_START}:K${lastDataRow})`, result: goodsTotalAmount };
+  amtSum.numFmt = "#,##0.00"; amtSum.font = boldFont; amtSum.alignment = { horizontal: "right" };
 
-  const stRow = summaryStart + 1;
+  const stRow  = summaryStart + 1;
   setCell(stRow, 1, "Subtotal", { font: boldFont });
-  const stCell   = ws.getCell(stRow, 11);
-  stCell.value   = { formula: `K${gtRow}` };
-  stCell.numFmt  = "#,##0.00"; stCell.font = boldFont; stCell.alignment = { horizontal: "right" };
+  const stCell = ws.getCell(stRow, 11);
+  stCell.value  = { formula: `K${gtRow}`, result: goodsTotalAmount };
+  stCell.numFmt = "#,##0.00"; stCell.font = boldFont; stCell.alignment = { horizontal: "right" };
 
   const vatRow = summaryStart + 2;
   setCell(vatRow, 1, "VAT", { font: boldFont });
-  const vatCell  = ws.getCell(vatRow, 11);
+  const vatCell = ws.getCell(vatRow, 11);
   vatCell.value  = invoice.vat;
   vatCell.numFmt = "#,##0.00"; vatCell.font = boldFont; vatCell.alignment = { horizontal: "right" };
 
   const totRow = summaryStart + 3;
   setCell(totRow, 1, "Total", { font: boldFont });
-  const totCell2   = ws.getCell(totRow, 11);
-  totCell2.value   = { formula: `K${stRow}+K${vatRow}` };
-  totCell2.numFmt  = "#,##0.00";
-  totCell2.font    = { name: "Arial", size: 10, bold: true };
+  const totCell2    = ws.getCell(totRow, 11);
+  totCell2.value    = { formula: `K${stRow}+K${vatRow}`, result: grandTotal };
+  totCell2.numFmt   = "#,##0.00";
+  totCell2.font     = { name: "Arial", size: 10, bold: true };
   totCell2.alignment = { horizontal: "right" };
 
   // ── Tariff subtotals — grey fill, bold ────────────────────────────────
 
+  const lastRow = lastDataRow;
   const tariffSectionStart = totRow + 3;
   const greyFill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } };
 
@@ -244,18 +254,24 @@ async function buildExcel(invoice) {
     if (!seen.has(item.tariffNo)) { seen.add(item.tariffNo); uniqueTariffs.push(item.tariffNo); }
   }
 
-  const tariffCol = `F${DATA_START}:F${lastDataRow}`;
-  const totalCol  = `K${DATA_START}:K${lastDataRow}`;
+  // Build tariff→total map for pre-calculated results
+  const tariffTotals = {};
+  for (const item of invoice.items) {
+    tariffTotals[item.tariffNo] = round2((tariffTotals[item.tariffNo] || 0) + item._total);
+  }
+
+  const tariffCol = `$F$${DATA_START}:$F$${lastRow}`;
+  const totalCol  = `$K$${DATA_START}:$K$${lastRow}`;
 
   uniqueTariffs.forEach((tariff, i) => {
     const r = tariffSectionStart + 2 + i;
     setCell(r, 1, tariff, { font: boldFont, fill: greyFill });
-    const sumCell    = ws.getCell(r, 2);
-    sumCell.value    = { formula: `SUMIF(${tariffCol},A${r},${totalCol})` };
-    sumCell.numFmt   = "#,##0.00";
-    sumCell.font     = boldFont;
-    sumCell.fill     = greyFill;
-    sumCell.alignment = { horizontal: "right" };
+    const sc     = ws.getCell(r, 2);
+    sc.value     = { formula: `SUMIF(${tariffCol},A${r},${totalCol})`, result: tariffTotals[tariff] || 0 };
+    sc.numFmt    = "#,##0.00";
+    sc.font      = boldFont;
+    sc.fill      = greyFill;
+    sc.alignment = { horizontal: "right" };
   });
 
   // ── Auto-fit column widths based on content ───────────────────────────
