@@ -357,10 +357,19 @@ export default async function handler(req, res) {
     return res.status(422).json({ error: `PDF kon niet worden gelezen: ${e.message}` });
   }
 
-  const invoice = parseInvoiceText(pdfData.text);
+  const rawText = pdfData.text;
+  console.log("=== PDF RAW TEXT ===\n" + rawText);
+
+  const invoice = parseInvoiceText(rawText);
 
   if (invoice.items.length === 0) {
-    return res.status(422).json({ error: "Geen factuurregels gevonden. Controleer of dit een O'Neill Commercial Invoice is." });
+    // Return raw text preview so we can debug the parser
+    const preview = rawText.split("\n").slice(0, 80).join("\n");
+    return res.status(422).json({
+      error: "Geen factuurregels gevonden. Controleer of dit een O'Neill Commercial Invoice is.",
+      debug_raw_text_first80lines: preview,
+      debug_total_chars: rawText.length,
+    });
   }
 
   let xlsxBuffer;
