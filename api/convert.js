@@ -22,38 +22,43 @@ function splitItemColour(combined) {
 const round2 = (n) => Math.round(n * 100) / 100;
 
 function parseQtyPrice(combined, totalCHF, discountCHF = 0) {
-  // combined = qty digits + price digits concatenated, e.g. "330,39" or "1721,70"
-  // Use total to validate: qty * price ≈ total + discount
-  const commaIdx = combined.indexOf(",");
-  if (commaIdx < 0) return { qty: parseInt(combined, 10), price: 0 };
-  const intPart      = combined.slice(0, commaIdx);
-  const decPart      = combined.slice(commaIdx + 1);
+  // combined = qty+price, possibly with spaces ("3 30,39") or thousands-sep periods ("11.200,00")
+  const s        = combined.trim();
+  const commaIdx = s.indexOf(",");
+  if (commaIdx < 0) return { qty: parseInt(s, 10), price: 0 };
+  const intPart      = s.slice(0, commaIdx);
+  const decPart      = s.slice(commaIdx + 1).trim();
   const expectedProd = round2(totalCHF + discountCHF);
 
   for (let qLen = 1; qLen < intPart.length; qLen++) {
-    const priceInt = intPart.slice(qLen);
+    const priceIntRaw = intPart.slice(qLen);
+    // Strip thousands-separator periods and leading spaces
+    const priceInt = priceIntRaw.replace(/\./g, "").trim();
     if (!priceInt || priceInt[0] === "0") continue;
     const qty   = parseInt(intPart.slice(0, qLen), 10);
     const price = parseFloat(`${priceInt}.${decPart}`);
+    if (isNaN(qty) || isNaN(price)) continue;
     if (Math.abs(round2(qty * price) - expectedProd) < 0.02) return { qty, price };
   }
   return { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`) };
 }
 
 function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
-  // Like parseQtyPrice but picks the split with minimum |qty*price - target|, no threshold.
-  const commaIdx = combined.indexOf(",");
-  if (commaIdx < 0) return { qty: parseInt(combined, 10), price: 0 };
-  const intPart  = combined.slice(0, commaIdx);
-  const decPart  = combined.slice(commaIdx + 1);
+  const s        = combined.trim();
+  const commaIdx = s.indexOf(",");
+  if (commaIdx < 0) return { qty: parseInt(s, 10), price: 0 };
+  const intPart  = s.slice(0, commaIdx);
+  const decPart  = s.slice(commaIdx + 1).trim();
   const target   = round2(totalCHF + discountCHF);
   let bestDiff   = Infinity;
   let best       = null;
   for (let qLen = 1; qLen < intPart.length; qLen++) {
-    const priceInt = intPart.slice(qLen);
+    const priceIntRaw = intPart.slice(qLen);
+    const priceInt    = priceIntRaw.replace(/\./g, "").trim();
     if (!priceInt || priceInt[0] === "0") continue;
     const qty   = parseInt(intPart.slice(0, qLen), 10);
     const price = parseFloat(`${priceInt}.${decPart}`);
+    if (isNaN(qty) || isNaN(price)) continue;
     const diff  = Math.abs(round2(qty * price) - target);
     if (diff < bestDiff) { bestDiff = diff; best = { qty, price }; }
   }
@@ -111,7 +116,10 @@ function parseInvoiceText(text) {
   const expectedTotal = gtM ? parseEuropeanNumber(gtM[2]) : null;
 
   // ── STEP 1 — Parse ────────────────────────────────────────────────────────
-  const lineRe = /(\d{7})(.+?)(?<=[a-z])(\d{4,5})(.+?)(\d{10})([\d.,]+)\s*gr\s*([\d,]+)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/g;
+  // [ ]* after (?<=[a-z]) allows a space between colour name and colour number in PDF columns.
+  // [\d,. ]+ for qty+price allows spaces (qty/price on separate PDF lines → space after \n→" ")
+  // and period thousands-separators (e.g. "11.200,00" = qty 1, price 1200.00).
+  const lineRe = /(\d{7})(.+?)(?<=[a-z]) *(\d{4,5})(.+?)(\d{10})([\d.,]+)\s*gr\s*([\d,. ]+?)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/g;
 
   const matchedIndices = new Set();
   for (const m of itemsText.matchAll(lineRe)) {
