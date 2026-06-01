@@ -19,14 +19,15 @@ function splitItemColour(combined) {
   return { item: combined.trim(), colour: "" };
 }
 
+const round2 = (n) => Math.round(n * 100) / 100;
+
 function parseQtyPrice(combined, totalCHF, discountCHF = 0) {
   // combined = qty digits + price digits concatenated, e.g. "330,39" or "1721,70"
-  // Use total to validate the correct split: qty * price = total + discount (line-item discount)
+  // Use total to validate: qty * price ≈ total + discount
   const commaIdx = combined.indexOf(",");
   if (commaIdx < 0) return { qty: parseInt(combined, 10), price: 0 };
   const intPart      = combined.slice(0, commaIdx);
   const decPart      = combined.slice(commaIdx + 1);
-  const round2       = (n) => Math.round(n * 100) / 100;
   const expectedProd = round2(totalCHF + discountCHF);
 
   for (let qLen = 1; qLen < intPart.length; qLen++) {
@@ -39,6 +40,26 @@ function parseQtyPrice(combined, totalCHF, discountCHF = 0) {
   return { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`) };
 }
 
+function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
+  // Like parseQtyPrice but picks the split with minimum |qty*price - target|, no threshold.
+  const commaIdx = combined.indexOf(",");
+  if (commaIdx < 0) return { qty: parseInt(combined, 10), price: 0 };
+  const intPart  = combined.slice(0, commaIdx);
+  const decPart  = combined.slice(commaIdx + 1);
+  const target   = round2(totalCHF + discountCHF);
+  let bestDiff   = Infinity;
+  let best       = null;
+  for (let qLen = 1; qLen < intPart.length; qLen++) {
+    const priceInt = intPart.slice(qLen);
+    if (!priceInt || priceInt[0] === "0") continue;
+    const qty   = parseInt(intPart.slice(0, qLen), 10);
+    const price = parseFloat(`${priceInt}.${decPart}`);
+    const diff  = Math.abs(round2(qty * price) - target);
+    if (diff < bestDiff) { bestDiff = diff; best = { qty, price }; }
+  }
+  return best || { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`) };
+}
+
 function extractCountry(groupCountry) {
   // e.g. "BlousesIndia" or "Dresses & JumpsuitsBangladesh" or "FootwearChina"
   // Country starts where a lowercase letter is followed by an uppercase letter
@@ -49,32 +70,24 @@ function extractCountry(groupCountry) {
 
 function parseInvoiceText(text) {
   const invoice = {
-    date: "",
-    orderNumber: "",
-    deliveryTerms: "",
-    numberOfBoxes: "",
-    grossWeight: "",
-    billingName: "",
-    billingAddress: [],
-    items: [],
-    invoiceDiscount: 0,
-    vat: 0,
+    date: "", orderNumber: "", deliveryTerms: "", numberOfBoxes: "",
+    grossWeight: "", billingName: "", billingAddress: [],
+    items: [], invoiceDiscount: 0, vat: 0,
+    _validation: null,
   };
 
-  // Header fields — search full text (no reliable line breaks)
-  const dateM        = /Date:\s*([\d\-]+)/.exec(text);
-  const orderM       = /Order number:\s*([\d,]+)/i.exec(text);
-  const deliveryM    = /Delivery terms:\s*(\S+)/.exec(text);
-  const boxesM       = /Number of boxes:\s*(\d+)/.exec(text);
-  const weightM      = /Gross weight:\s*([\d.,]+ gr)/.exec(text);
-
+  // ── Header fields ─────────────────────────────────────────────────────────
+  const dateM     = /Date:\s*([\d\-]+)/.exec(text);
+  const orderM    = /Order number:\s*([\d,]+)/i.exec(text);
+  const deliveryM = /Delivery terms:\s*(\S+)/.exec(text);
+  const boxesM    = /Number of boxes:\s*(\d+)/.exec(text);
+  const weightM   = /Gross weight:\s*([\d.,]+ gr)/.exec(text);
   if (dateM)     invoice.date          = dateM[1].trim();
   if (orderM)    invoice.orderNumber   = orderM[1].trim();
   if (deliveryM) invoice.deliveryTerms = deliveryM[1].trim();
   if (boxesM)    invoice.numberOfBoxes = boxesM[1].trim();
   if (weightM)   invoice.grossWeight   = weightM[1].trim();
 
-  // Billing address: text between "Billing address" and "O'Neill"
   const billingBlock = /Billing address\s+([\s\S]+?)O'Neill/i.exec(text);
   if (billingBlock) {
     const addrLines = billingBlock[1].trim().split(/\n/).map(l => l.trim()).filter(Boolean);
@@ -82,8 +95,9 @@ function parseInvoiceText(text) {
     invoice.billingAddress = addrLines.slice(1);
   }
 
-  // Collapse newlines to spaces so multi-line PDF cells (e.g. "Dresses &\nJumpsuits\nBangladesh")
-  // don't break the regex. Restrict to the items section to avoid false matches in headers.
+  // ── Normalise text ────────────────────────────────────────────────────────
+  // Collapse newlines to spaces so multi-line PDF cells don't break the regex.
+  // Restrict to the items section to prevent false matches in the header block.
   const flatText   = text.replace(/\n/g, " ");
   const itemsStart = flatText.indexOf("DiscountTotal");
   const itemsEnd   = flatText.search(/Goods total/i);
@@ -91,38 +105,80 @@ function parseInvoiceText(text) {
     ? flatText.slice(itemsStart, itemsEnd)
     : flatText;
 
-  // Line items — colour_no anchored on lowercase lookbehind to skip numbers in item names
-  // (e.g. "1952" in "O'RIGINALS 1952 T-SHIRT" won't match because it's not preceded by lowercase)
-  // qty+price extracted as one group; split via total-based disambiguation
+  // Expected totals from PDF summary line, used for self-validation
+  const gtM          = /Goods total\s*(\d+)\s+([\d.,]+)\s*CHF/i.exec(flatText);
+  const expectedQty   = gtM ? parseInt(gtM[1], 10) : null;
+  const expectedTotal = gtM ? parseEuropeanNumber(gtM[2]) : null;
+
+  // ── STEP 1 — Parse ────────────────────────────────────────────────────────
   const lineRe = /(\d{7})(.+?)(?<=[a-z])(\d{4,5})(.+?)(\d{10})([\d.,]+)\s*gr\s*([\d,]+)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/g;
 
+  const matchedIndices = new Set();
   for (const m of itemsText.matchAll(lineRe)) {
+    matchedIndices.add(m.index);
     const { item, colour } = splitItemColour(m[2]);
     const country          = extractCountry(m[4]);
     const lineDiscount     = parseEuropeanNumber(m[8]);
     const lineTotal        = parseEuropeanNumber(m[9]);
     const { qty, price }   = parseQtyPrice(m[7], lineTotal, lineDiscount);
-
     invoice.items.push({
-      itemNo:        m[1],
-      item,
-      colour,
-      colourNo:      m[3],
-      country,
-      tariffNo:      m[5],
-      grossWeight:   parseEuropeanNumber(m[6]),
-      quantity:      qty,
-      pricePerPiece: price,
-      discount:      lineDiscount,
-      total:         lineTotal,
+      itemNo: m[1], item, colour, colourNo: m[3], country, tariffNo: m[5],
+      grossWeight: parseEuropeanNumber(m[6]),
+      quantity: qty, pricePerPiece: price, discount: lineDiscount, total: lineTotal,
+      _combined: m[7],
     });
   }
 
-  // Invoice-level discount (between Goods total and Subtotal)
+  // Detect 7-digit candidates that weren't matched (potential missed rows)
+  const missedRows = [];
+  for (const c of itemsText.matchAll(/(?<!\d)(\d{7})(?!\d)/g)) {
+    const covered = [...matchedIndices].some(p => c.index >= p && c.index <= p + 10);
+    if (!covered) {
+      const ctx = itemsText.slice(c.index, c.index + 80).replace(/\s+/g, " ");
+      missedRows.push({ itemNo: c[1], context: ctx });
+    }
+  }
+
+  // ── STEP 2 — Validate ─────────────────────────────────────────────────────
+  let parsedQty   = invoice.items.reduce((s, i) => s + i.quantity, 0);
+  let parsedTotal = round2(invoice.items.reduce((s, i) => s + i.total, 0));
+  let totalOk = expectedTotal === null || Math.abs(parsedTotal - expectedTotal) < 0.10;
+  let qtyOk   = expectedQty  === null || parsedQty === expectedQty;
+
+  // ── STEP 3 — Repair if needed ─────────────────────────────────────────────
+  const repairs = [];
+  if (!totalOk || !qtyOk) {
+    for (const item of invoice.items) {
+      const computed = round2(item.quantity * item.pricePerPiece - item.discount);
+      if (Math.abs(computed - item.total) > 0.02) {
+        const fixed = bestQtyPrice(item._combined, item.total, item.discount);
+        repairs.push({
+          itemNo: item.itemNo, item: item.item, colour: item.colour,
+          combined: item._combined,
+          oldQty: item.quantity, oldPrice: item.pricePerPiece,
+          newQty: fixed.qty,    newPrice: fixed.price,
+        });
+        item.quantity      = fixed.qty;
+        item.pricePerPiece = fixed.price;
+      }
+    }
+
+    // ── STEP 4 — Re-validate ─────────────────────────────────────────────
+    parsedQty   = invoice.items.reduce((s, i) => s + i.quantity, 0);
+    parsedTotal = round2(invoice.items.reduce((s, i) => s + i.total, 0));
+    totalOk = expectedTotal === null || Math.abs(parsedTotal - expectedTotal) < 0.10;
+    qtyOk   = expectedQty  === null || parsedQty === expectedQty;
+  }
+
+  invoice._validation = {
+    valid: totalOk && qtyOk,
+    parsedQty, parsedTotal, expectedQty, expectedTotal,
+    totalOk, qtyOk, repairs, missedRows,
+  };
+
+  // Invoice-level discount and VAT
   const invDiscM = /Discount\s+([\d.,]+)\s*CHF/i.exec(text);
   if (invDiscM) invoice.invoiceDiscount = parseEuropeanNumber(invDiscM[1]);
-
-  // VAT
   const vatM = /VAT\s+([\d.,]+)\s*CHF/i.exec(text);
   if (vatM) invoice.vat = parseEuropeanNumber(vatM[1]);
 
@@ -204,7 +260,6 @@ async function buildExcel(invoice) {
   const DATA_START = 18;
 
   // Pre-calculate all totals (needed as formula results for Excel caching)
-  const round2 = (n) => Math.round(n * 100) / 100;
   invoice.items.forEach(item => {
     item._total = round2(item.quantity * item.pricePerPiece - item.discount);
   });
@@ -248,6 +303,9 @@ async function buildExcel(invoice) {
   const amtSum  = ws.getCell(gtRow, 11);
   amtSum.value  = { formula: `SUM(K${DATA_START}:K${lastDataRow})`, result: goodsTotalAmount };
   amtSum.numFmt = "#,##0.00"; amtSum.font = boldFont; amtSum.alignment = { horizontal: "right" };
+  if (invoice._validation?.valid) {
+    amtSum.note = `✓ Self-validated: ${goodsTotalQty} items, CHF ${goodsTotalAmount.toFixed(2)}`;
+  }
 
   const hasDiscount = invoiceDiscount > 0;
   const discRow = hasDiscount ? summaryStart + 1 : null;
@@ -381,6 +439,19 @@ export default async function handler(req, res) {
   if (invoice.items.length === 0) {
     return res.status(422).json({
       error: "Geen factuurregels gevonden. Controleer of dit een O'Neill Commercial Invoice is.",
+    });
+  }
+
+  const v = invoice._validation;
+  if (v && !v.valid) {
+    return res.status(422).json({
+      error: "Validatie mislukt na herstel",
+      parsedQty:     v.parsedQty,
+      expectedQty:   v.expectedQty,
+      parsedTotal:   v.parsedTotal,
+      expectedTotal: v.expectedTotal,
+      missedRows:    v.missedRows,
+      repairs:       v.repairs,
     });
   }
 
