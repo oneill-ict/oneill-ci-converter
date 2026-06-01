@@ -116,35 +116,51 @@ function parseInvoiceText(text) {
   const expectedTotal = gtM ? parseEuropeanNumber(gtM[2]) : null;
 
   // ── STEP 1 — Parse ────────────────────────────────────────────────────────
-  // [ ]* after (?<=[a-z]) allows a space between colour name and colour number in PDF columns.
-  // [\d,. ]+ for qty+price allows spaces (qty/price on separate PDF lines → space after \n→" ")
-  // and period thousands-separators (e.g. "11.200,00" = qty 1, price 1200.00).
-  const lineRe = /(\d{7})(.+?)(?<=[a-z]) *(\d{4,5})(.+?)(\d{10})([\d.,]+)\s*gr\s*([\d,. ]+?)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/g;
+  // Strategy: find every standalone 7-digit item number, slice the text to that
+  // item's own segment, then match fields within the segment only.
+  // This prevents lazy groups from spanning across item boundaries.
 
-  const matchedIndices = new Set();
-  for (const m of itemsText.matchAll(lineRe)) {
-    matchedIndices.add(m.index);
+  // Field regex (no /g flag — runs once per item slice).
+  // \s* between tariff code and weight handles PDF column spaces/newlines.
+  // [\d,. ]+? for qty+price allows spaces and period thousands-separators.
+  const fieldRe = /(\d{7})(.+?)(?<=[a-z]) *(\d{4,5})(.+?)(\d{10})\s*([\d.,]+)\s*gr\s*([\d,. ]+?)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/;
+
+  // Locate all candidate item-number positions
+  const itemStarts = [];
+  for (const c of itemsText.matchAll(/(?<!\d)(\d{7})(?!\d)/g)) {
+    itemStarts.push({ itemNo: c[1], pos: c.index });
+  }
+
+  const missedRows = [];
+  for (let i = 0; i < itemStarts.length; i++) {
+    const { itemNo, pos } = itemStarts[i];
+    // Slice to next item's start so the regex can't cross item boundaries
+    const end   = i + 1 < itemStarts.length ? itemStarts[i + 1].pos : itemsText.length;
+    const slice = itemsText.slice(pos, end);
+
+    const m = fieldRe.exec(slice);
+    if (!m) {
+      missedRows.push({ itemNo, context: slice.slice(0, 300).replace(/\s+/g, " ") });
+      continue;
+    }
+
     const { item, colour } = splitItemColour(m[2]);
     const country          = extractCountry(m[4]);
     const lineDiscount     = parseEuropeanNumber(m[8]);
     const lineTotal        = parseEuropeanNumber(m[9]);
-    const { qty, price }   = parseQtyPrice(m[7], lineTotal, lineDiscount);
+
+    // Try primary split; fall back to bestQtyPrice immediately if it doesn't check out
+    let { qty, price } = parseQtyPrice(m[7], lineTotal, lineDiscount);
+    if (Math.abs(round2(qty * price - lineDiscount) - lineTotal) > 0.02) {
+      ({ qty, price } = bestQtyPrice(m[7], lineTotal, lineDiscount));
+    }
+
     invoice.items.push({
       itemNo: m[1], item, colour, colourNo: m[3], country, tariffNo: m[5],
       grossWeight: parseEuropeanNumber(m[6]),
       quantity: qty, pricePerPiece: price, discount: lineDiscount, total: lineTotal,
       _combined: m[7],
     });
-  }
-
-  // Detect 7-digit candidates that weren't matched (potential missed rows)
-  const missedRows = [];
-  for (const c of itemsText.matchAll(/(?<!\d)(\d{7})(?!\d)/g)) {
-    const covered = [...matchedIndices].some(p => c.index >= p && c.index <= p + 10);
-    if (!covered) {
-      const ctx = itemsText.slice(c.index, c.index + 80).replace(/\s+/g, " ");
-      missedRows.push({ itemNo: c[1], context: ctx });
-    }
   }
 
   // ── STEP 2 — Validate ─────────────────────────────────────────────────────

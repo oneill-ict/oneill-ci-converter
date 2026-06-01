@@ -71,28 +71,34 @@ const expectedQty   = gtM ? parseInt(gtM[1], 10) : null;
 const expectedTotal = gtM ? parseEuropeanNumber(gtM[2]) : null;
 console.log(`PDF summary: expectedQty=${expectedQty}, expectedTotal=${expectedTotal}`);
 
-// ── STEP 1 — Parse ────────────────────────────────────────────────────────────
-const lineRe = /(\d{7})(.+?)(?<=[a-z]) *(\d{4,5})(.+?)(\d{10})([\d.,]+)\s*gr\s*([\d,. ]+?)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/g;
-const matchedIndices = new Set();
+// ── STEP 1 — Parse (per-item slice approach) ─────────────────────────────────
+const fieldRe = /(\d{7})(.+?)(?<=[a-z]) *(\d{4,5})(.+?)(\d{10})\s*([\d.,]+)\s*gr\s*([\d,. ]+?)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/;
+
+const itemStarts = [];
+for (const c of itemsText.matchAll(/(?<!\d)(\d{7})(?!\d)/g)) {
+  itemStarts.push({ itemNo: c[1], pos: c.index });
+}
+
+const missedRows = [];
 const items = [];
-for (const m of itemsText.matchAll(lineRe)) {
-  matchedIndices.add(m.index);
+for (let i = 0; i < itemStarts.length; i++) {
+  const { itemNo, pos } = itemStarts[i];
+  const end   = i + 1 < itemStarts.length ? itemStarts[i + 1].pos : itemsText.length;
+  const slice = itemsText.slice(pos, end);
+  const m = fieldRe.exec(slice);
+  if (!m) {
+    missedRows.push({ itemNo, context: slice.slice(0, 300).replace(/\s+/g, " ") });
+    continue;
+  }
   const { item, colour } = splitItemColour(m[2]);
   const country      = extractCountry(m[4]);
   const lineDiscount = parseEuropeanNumber(m[8]);
   const lineTotal    = parseEuropeanNumber(m[9]);
-  const { qty, price } = parseQtyPrice(m[7], lineTotal, lineDiscount);
-  items.push({ itemNo: m[1], item, colour, qty, price, discount: lineDiscount, total: lineTotal, _combined: m[7] });
-}
-
-// Missed rows
-const missedRows = [];
-for (const c of itemsText.matchAll(/(?<!\d)(\d{7})(?!\d)/g)) {
-  const covered = [...matchedIndices].some(p => c.index >= p && c.index <= p + 10);
-  if (!covered) {
-    const ctx = itemsText.slice(c.index, c.index + 80).replace(/\s+/g, " ");
-    missedRows.push({ itemNo: c[1], context: ctx });
+  let { qty, price } = parseQtyPrice(m[7], lineTotal, lineDiscount);
+  if (Math.abs(round2(qty * price - lineDiscount) - lineTotal) > 0.02) {
+    ({ qty, price } = bestQtyPrice(m[7], lineTotal, lineDiscount));
   }
+  items.push({ itemNo: m[1], item, colour, qty, price, discount: lineDiscount, total: lineTotal, _combined: m[7] });
 }
 
 if (missedRows.length > 0) {
