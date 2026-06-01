@@ -82,12 +82,21 @@ function parseInvoiceText(text) {
     invoice.billingAddress = addrLines.slice(1);
   }
 
+  // Collapse newlines to spaces so multi-line PDF cells (e.g. "Dresses &\nJumpsuits\nBangladesh")
+  // don't break the regex. Restrict to the items section to avoid false matches in headers.
+  const flatText   = text.replace(/\n/g, " ");
+  const itemsStart = flatText.indexOf("DiscountTotal");
+  const itemsEnd   = flatText.search(/Goods total/i);
+  const itemsText  = itemsStart >= 0 && itemsEnd > itemsStart
+    ? flatText.slice(itemsStart, itemsEnd)
+    : flatText;
+
   // Line items — colour_no anchored on lowercase lookbehind to skip numbers in item names
   // (e.g. "1952" in "O'RIGINALS 1952 T-SHIRT" won't match because it's not preceded by lowercase)
   // qty+price extracted as one group; split via total-based disambiguation
   const lineRe = /(\d{7})(.+?)(?<=[a-z])(\d{4,5})(.+?)(\d{10})([\d.,]+)\s*gr\s*([\d,]+)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/g;
 
-  for (const m of text.matchAll(lineRe)) {
+  for (const m of itemsText.matchAll(lineRe)) {
     const { item, colour } = splitItemColour(m[2]);
     const country          = extractCountry(m[4]);
     const lineDiscount     = parseEuropeanNumber(m[8]);
