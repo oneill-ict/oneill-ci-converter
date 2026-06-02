@@ -51,7 +51,7 @@ export default function App() {
       const res = await fetch("/api/convert", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pdf: base64 }),
+        body: JSON.stringify({ pdf: base64, filename: file.name }),
       });
 
       if (!res.ok) {

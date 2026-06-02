@@ -386,9 +386,7 @@ async function buildExcel(invoice) {
   const amtSum  = ws.getCell(gtRow, 11);
   amtSum.value  = { formula: `SUM(K${DATA_START}:K${lastDataRow})`, result: goodsTotalAmount };
   amtSum.numFmt = "#,##0.00"; amtSum.font = boldFont; amtSum.alignment = { horizontal: "right" };
-  if (invoice._validation?.valid) {
-    amtSum.note = `✓ Self-validated: ${goodsTotalQty} items, CHF ${goodsTotalAmount.toFixed(2)}`;
-  }
+  // Note intentionally removed: ExcelJS VML drawing for notes causes Excel repair warnings
 
   const hasDiscount = invoiceDiscount > 0;
   const discRow = hasDiscount ? summaryStart + 1 : null;
@@ -500,7 +498,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { pdf } = req.body || {};
+  const { pdf, filename } = req.body || {};
   if (!pdf) return res.status(400).json({ error: "Geen PDF ontvangen" });
 
   let pdfBuffer;
@@ -557,11 +555,18 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: `Excel kon niet worden aangemaakt: ${e.message}` });
   }
 
-  const orderSlug = invoice.orderNumber
-    ? invoice.orderNumber.replace(/,/g, "-")
-    : invoice.date.replace(/[^0-9-]/g, "") || "invoice";
+  // Use the original PDF filename (without extension) if provided, else fall back to order/date
+  let exportName;
+  if (filename) {
+    exportName = filename.replace(/\.[^.]+$/, ""); // strip extension
+  } else {
+    const orderSlug = invoice.orderNumber
+      ? invoice.orderNumber.replace(/,/g, "-")
+      : invoice.date.replace(/[^0-9-]/g, "") || "invoice";
+    exportName = `CI_${orderSlug}`;
+  }
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="CI_${orderSlug}.xlsx"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${exportName}.xlsx"`);
   res.setHeader("Content-Length", xlsxBuffer.byteLength);
   return res.status(200).end(Buffer.from(xlsxBuffer));
 }
