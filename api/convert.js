@@ -355,7 +355,9 @@ async function buildExcel(invoice) {
   invoice.items.forEach((item, idx) => {
     const r = DATA_START + idx;
 
-    setCell(r, 1, parseInt(item.itemNo, 10), { alignment: { horizontal: "left" } });
+    // Keep N-prefixed item numbers (e.g. N03204) as string; pure digits as number
+    const itemNoVal = /^\d+$/.test(item.itemNo) ? parseInt(item.itemNo, 10) : item.itemNo;
+    setCell(r, 1, itemNoVal, { alignment: { horizontal: "left" } });
     setCell(r, 2, item.item);
     setCell(r, 3, item.colour);
     setCell(r, 4, item.colourNo,  { alignment: { horizontal: "left" } });
