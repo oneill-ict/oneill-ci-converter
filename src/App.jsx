@@ -62,9 +62,9 @@ export default function App() {
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      const invoiceDate = file.name.replace(/[^0-9-]/g, "").slice(0, 10) || "invoice";
+      const exportName = file.name.replace(/\.[^.]+$/, "") + ".xlsx";
       a.href = url;
-      a.download = `commercial-invoice-${invoiceDate}.xlsx`;
+      a.download = exportName;
       document.body.appendChild(a);
       a.click();
       a.remove();
