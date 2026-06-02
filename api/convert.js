@@ -115,51 +115,77 @@ function parseInvoiceText(text) {
   const expectedQty   = gtM ? parseInt(gtM[1], 10) : null;
   const expectedTotal = gtM ? parseEuropeanNumber(gtM[2]) : null;
 
-  // ── STEP 1 — Parse ────────────────────────────────────────────────────────
-  // Strategy: find every standalone 7-digit item number, slice the text to that
-  // item's own segment, then match fields within the segment only.
-  // This prevents lazy groups from spanning across item boundaries.
+  // ── STEP 1 — Split text into per-item blocks ─────────────────────────────
+  // Split on standalone 7-digit numbers or N+5-digit numbers only.
+  // Single-letter colour suffixes (W34041, B36116, F35235) are NOT item numbers
+  // and will never trigger a split here.
+  const splitRe = /(?<!\d)(?=(?:\d{7}|N\d{5})(?!\d))/g;
+  const blocks  = itemsText.split(splitRe).filter(b => b.trim());
 
-  // Field regex (no /g flag — runs once per item slice).
-  // \s* between tariff code and weight handles PDF column spaces/newlines.
-  // [\d,. ]+? for qty+price allows spaces and period thousands-separators.
-  const fieldRe = /(\d{7}|N\d{5})(.+?)(?<=[a-z]|(?<=\s)[A-Z]) *(\d{4,5})(.+?)(\d{10})\s*([\d.,]+)\s*gr\s*([\d,. ]+?)\s*CHF\s*([\d.,]+)\s*CHF\s*([\d.,]+)\s*CHF/;
-
-  // Locate all candidate item-number positions
-  const itemStarts = [];
-  for (const c of itemsText.matchAll(/(?<!\d)(\d{7}|N\d{5})(?!\d)/g)) {
-    itemStarts.push({ itemNo: c[1], pos: c.index });
-  }
-
+  // ── STEP 2 — Parse each block independently ───────────────────────────────
   const missedRows = [];
-  for (let i = 0; i < itemStarts.length; i++) {
-    const { itemNo, pos } = itemStarts[i];
-    // Slice to next item's start so the regex can't cross item boundaries
-    const end   = i + 1 < itemStarts.length ? itemStarts[i + 1].pos : itemsText.length;
-    const slice = itemsText.slice(pos, end);
+  for (const block of blocks) {
+    // Item number must appear (near the start of the block)
+    const itemNoM = /(\d{7}|N\d{5})(?!\d)/.exec(block);
+    if (!itemNoM) continue;
+    const itemNo    = itemNoM[1];
+    const itemNoEnd = itemNoM.index + itemNo.length;
 
-    const m = fieldRe.exec(slice);
-    if (!m) {
-      missedRows.push({ itemNo, context: slice.slice(0, 300).replace(/\s+/g, " ") });
+    // Collect all "number CHF" occurrences; last 3 are: combined, discount, total
+    const chfAll = [...block.matchAll(/([\d., ]+?)\s*CHF/g)];
+    if (chfAll.length < 3) {
+      missedRows.push({ itemNo, reason: `${chfAll.length} CHF values`, context: block.slice(0, 200).replace(/\s+/g, " ") });
       continue;
     }
+    const last3       = chfAll.slice(-3);
+    const combined    = last3[0][1].trim();
+    const lineDiscount = parseEuropeanNumber(last3[1][1].trim());
+    const lineTotal    = parseEuropeanNumber(last3[2][1].trim());
 
-    const { item, colour } = splitItemColour(m[2]);
-    const country          = extractCountry(m[4]);
-    const lineDiscount     = parseEuropeanNumber(m[8]);
-    const lineTotal        = parseEuropeanNumber(m[9]);
+    // Tariff number (10 digits) immediately followed by gross weight digits + "gr"
+    // e.g. "6206300090240,00 gr" — no space between tariff and weight in PDF output
+    const tariffGrM = /(\d{10})(\d+[.,]\d+)\s*gr/.exec(block);
+    if (!tariffGrM) {
+      missedRows.push({ itemNo, reason: "no tariff+gr", context: block.slice(0, 200).replace(/\s+/g, " ") });
+      continue;
+    }
+    const tariffNo  = tariffGrM[1];
+    const tariffPos = tariffGrM.index;
+    const grossWeight = parseEuropeanNumber(tariffGrM[2]);
 
-    // Try primary split; fall back to bestQtyPrice immediately if it doesn't check out
-    let { qty, price } = parseQtyPrice(m[7], lineTotal, lineDiscount);
+    // Text between itemNo and tariff number contains: item name, colour, colourNo, category/country
+    const midText = block.slice(itemNoEnd, tariffPos);
+
+    // Colour number: 4-5 digit standalone number preceded by a lowercase letter
+    // OR a single uppercase letter that itself follows a space (e.g. "Palms W 34041").
+    // This prevents numbers embedded in ALL-CAPS item names (e.g. "RIGINALS 1952")
+    // from matching because the uppercase S in RIGINALS is not preceded by a space.
+    const colourNoM = /(?<=[a-z]|(?<=\s)[A-Z]) *(\d{4,5})(?!\d)/.exec(midText);
+    const colourNo  = colourNoM ? colourNoM[1] : "";
+
+    // Country: text after colourNo and before tariff
+    const afterColourNo = colourNoM
+      ? midText.slice(colourNoM.index + colourNoM[0].length)
+      : midText;
+    const country = extractCountry(afterColourNo.trim());
+
+    // Item + colour name: text between itemNo and colourNo (or end of midText)
+    const namePart = colourNoM
+      ? midText.slice(0, colourNoM.index).trim()
+      : midText.trim();
+    const { item, colour } = splitItemColour(namePart);
+
+    // Qty + price — try exact split first, fall back to best-match
+    let { qty, price } = parseQtyPrice(combined, lineTotal, lineDiscount);
     if (Math.abs(round2(qty * price - lineDiscount) - lineTotal) > 0.01) {
-      ({ qty, price } = bestQtyPrice(m[7], lineTotal, lineDiscount));
+      ({ qty, price } = bestQtyPrice(combined, lineTotal, lineDiscount));
     }
 
     invoice.items.push({
-      itemNo: m[1], item, colour, colourNo: m[3], country, tariffNo: m[5],
-      grossWeight: parseEuropeanNumber(m[6]),
+      itemNo, item, colour, colourNo, country, tariffNo,
+      grossWeight,
       quantity: qty, pricePerPiece: price, discount: lineDiscount, total: lineTotal,
-      _combined: m[7],
+      _combined: combined,
     });
   }
 
