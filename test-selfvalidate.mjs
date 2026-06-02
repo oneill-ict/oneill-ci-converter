@@ -65,14 +65,16 @@ function extractCountry(g) {
 const data = await pdfParse(readFileSync("CommercialInvoice-.pdf"));
 const flatText   = data.text.replace(/\n/g, " ");
 const itemsStart = flatText.indexOf("DiscountTotal");
-const itemsEnd   = flatText.search(/Goods total/i);
+const flatLower  = flatText.toLowerCase();
+const itemsEnd   = flatLower.lastIndexOf("goods total");
 const itemsText  = itemsStart >= 0 && itemsEnd > itemsStart
   ? flatText.slice(itemsStart, itemsEnd)
   : flatText;
 
-const gtM          = /Goods total\s*(\d+)\s+([\d.,]+)\s*CHF/i.exec(flatText);
-const expectedQty   = gtM ? parseInt(gtM[1], 10) : null;
-const expectedTotal = gtM ? parseEuropeanNumber(gtM[2]) : null;
+let lastGtM = null;
+for (const m of flatText.matchAll(/Goods total\s*(\d+)\s+([\d.,]+)\s*CHF/gi)) lastGtM = m;
+const expectedQty   = lastGtM ? parseInt(lastGtM[1], 10) : null;
+const expectedTotal = lastGtM ? parseEuropeanNumber(lastGtM[2]) : null;
 console.log(`PDF summary: expectedQty=${expectedQty}, expectedTotal=${expectedTotal}`);
 
 // ── STEP 1 — Split into per-item blocks ──────────────────────────────────────

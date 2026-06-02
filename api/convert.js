@@ -105,15 +105,22 @@ function parseInvoiceText(text) {
   // Restrict to the items section to prevent false matches in the header block.
   const flatText   = text.replace(/\n/g, " ");
   const itemsStart = flatText.indexOf("DiscountTotal");
-  const itemsEnd   = flatText.search(/Goods total/i);
+
+  // The PDF may contain intermediate "Goods total" subtotals per page/category.
+  // Use the LAST occurrence so we capture all items across all pages.
+  const flatLower  = flatText.toLowerCase();
+  const itemsEnd   = flatLower.lastIndexOf("goods total");
   const itemsText  = itemsStart >= 0 && itemsEnd > itemsStart
     ? flatText.slice(itemsStart, itemsEnd)
     : flatText;
 
-  // Expected totals from PDF summary line, used for self-validation
-  const gtM          = /Goods total\s*(\d+)\s+([\d.,]+)\s*CHF/i.exec(flatText);
-  const expectedQty   = gtM ? parseInt(gtM[1], 10) : null;
-  const expectedTotal = gtM ? parseEuropeanNumber(gtM[2]) : null;
+  // Expected totals — read from the LAST "Goods total N CHF" line (the grand total)
+  let lastGtM = null;
+  for (const m of flatText.matchAll(/Goods total\s*(\d+)\s+([\d.,]+)\s*CHF/gi)) {
+    lastGtM = m;
+  }
+  const expectedQty   = lastGtM ? parseInt(lastGtM[1], 10) : null;
+  const expectedTotal = lastGtM ? parseEuropeanNumber(lastGtM[2]) : null;
 
   // ── STEP 1 — Split text into per-item blocks ─────────────────────────────
   // Split on standalone 7-digit numbers or N+5-digit numbers only.
