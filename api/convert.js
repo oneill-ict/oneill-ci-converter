@@ -514,7 +514,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { pdf, filename } = req.body || {};
+  const { pdf, filename, force } = req.body || {};
   if (!pdf) return res.status(400).json({ error: "Geen PDF ontvangen" });
 
   let pdfBuffer;
@@ -540,27 +540,16 @@ export default async function handler(req, res) {
   }
 
   const v = invoice._validation;
-  if (v && !v.valid) {
-    const allRows = invoice.items.map(it => ({
-      itemNo:    it.itemNo,
-      item:      it.item,
-      colour:    it.colour,
-      qty:       it.quantity,
-      price:     it.pricePerPiece,
-      discount:  it.discount,
-      total:     it.total,
-      calcTotal: round2(it.quantity * it.pricePerPiece - it.discount),
-    }));
+  // Validation mismatch: return structured error so frontend can show a readable message.
+  // When force=true the client explicitly wants the Excel anyway (e.g. after warning).
+  if (v && !v.valid && !force) {
     return res.status(422).json({
-      error: "Validatie mislukt na herstel",
+      error:         "Validatie mislukt na herstel",
       parsedQty:     v.parsedQty,
       expectedQty:   v.expectedQty,
       parsedTotal:   v.parsedTotal,
       expectedTotal: v.expectedTotal,
-      missedRows:       v.missedRows,
-      repairs:          v.repairs,
-      unparsedItemNos:  v.unparsedItemNos,
-      allRows,
+      missedRows:    v.missedRows,
     });
   }
 
@@ -587,5 +576,15 @@ export default async function handler(req, res) {
   // Expose validation stats so the frontend can show a summary
   res.setHeader("X-Validation-Qty",   String(invoice._validation?.parsedQty   ?? ""));
   res.setHeader("X-Validation-Total", String(invoice._validation?.parsedTotal ?? ""));
+  // First-10-rows preview so the frontend can show a table before confirming download
+  const previewRows = invoice.items.slice(0, 10).map(it => ({
+    n: it.itemNo,
+    i: it.item.slice(0, 28),
+    c: it.colour.slice(0, 18),
+    q: it.quantity,
+    p: it.pricePerPiece,
+    t: it.total,
+  }));
+  res.setHeader("X-Preview", JSON.stringify(previewRows));
   return res.status(200).end(Buffer.from(xlsxBuffer));
 }
