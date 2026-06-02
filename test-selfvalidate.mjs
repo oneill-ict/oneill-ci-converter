@@ -82,7 +82,7 @@ const expectedTotal = lastGtM ? parseEuropeanNumber(lastGtM[2]) : null;
 console.log(`PDF summary: expectedQty=${expectedQty}, expectedTotal=${expectedTotal}`);
 
 // ── STEP 1 — Split into per-item blocks ──────────────────────────────────────
-const splitRe = /(?<!\d)(?=(?:\d{7}|N\d{5})(?!\d))/g;
+const splitRe = /(?<!\d)(?=(?:\d{7}(?!\d{3})|N\d{5}(?!\d)))/g;
 const blocks  = itemsText.split(splitRe).filter(b => b.trim());
 console.log(`\nBlocks found: ${blocks.length}`);
 
@@ -91,7 +91,7 @@ const missedRows = [];
 const items = [];
 
 for (const block of blocks) {
-  const itemNoM = /(\d{7}|N\d{5})(?!\d)/.exec(block);
+  const itemNoM = /(?<!\d)(\d{7}(?!\d{3})|N\d{5}(?!\d))/.exec(block);
   if (!itemNoM) continue;
   const itemNo    = itemNoM[1];
   const itemNoEnd = itemNoM.index + itemNo.length;

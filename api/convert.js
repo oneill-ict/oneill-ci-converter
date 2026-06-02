@@ -129,17 +129,19 @@ function parseInvoiceText(text) {
   const expectedTotal = lastGtM ? parseEuropeanNumber(lastGtM[2]) : null;
 
   // ── STEP 1 — Split text into per-item blocks ─────────────────────────────
-  // Split on standalone 7-digit numbers or N+5-digit numbers only.
-  // Single-letter colour suffixes (W34041, B36116, F35235) are NOT item numbers
-  // and will never trigger a split here.
-  const splitRe = /(?<!\d)(?=(?:\d{7}|N\d{5})(?!\d))/g;
+  // Split on item-number boundaries.
+  // Rule: a 7-digit sequence is an item number if NOT followed by 3+ more digits
+  // (which would make it part of a 10-digit HS tariff code).
+  // This handles items whose names start with digits, e.g. "2100049" + "75 YEARS TOWEL"
+  // appears as "210004975" in the PDF — we split at position 7 because only 2 digits follow.
+  const splitRe = /(?<!\d)(?=(?:\d{7}(?!\d{3})|N\d{5}(?!\d)))/g;
   const blocks  = itemsText.split(splitRe).filter(b => b.trim());
 
   // ── STEP 2 — Parse each block independently ───────────────────────────────
   const missedRows = [];
   for (const block of blocks) {
     // Item number must appear (near the start of the block)
-    const itemNoM = /(\d{7}|N\d{5})(?!\d)/.exec(block);
+    const itemNoM = /(?<!\d)(\d{7}(?!\d{3})|N\d{5}(?!\d))/.exec(block);
     if (!itemNoM) {
       // Log blocks that have no item number so we can diagnose gaps
       missedRows.push({ itemNo: "???", reason: "no item number in block", context: block.slice(0, 150).replace(/\s+/g, " ") });
@@ -240,7 +242,7 @@ function parseInvoiceText(text) {
   // Find item numbers present in itemsText but absent from parsed results — diagnostic
   const parsedItemNos = new Set(invoice.items.map(i => i.itemNo));
   const unparsedItemNos = [];
-  for (const c of itemsText.matchAll(/(?<!\d)(\d{7}|N\d{5})(?!\d)/g)) {
+  for (const c of itemsText.matchAll(/(?<!\d)(\d{7}(?!\d{3})|N\d{5}(?!\d))/g)) {
     if (!parsedItemNos.has(c[1])) {
       const pos = c.index;
       unparsedItemNos.push({
