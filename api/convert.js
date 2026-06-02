@@ -332,8 +332,8 @@ async function buildExcel(invoice) {
   const shipToLines  = [invoice.billingName, ...(invoice.billingAddress || [])];
   for (let i = 0; i < 4; i++) {
     setCell(2 + i, 1, shipperLines[i] || "");
-    // Ship to: auto-filled from PDF billing address (yellow — user can verify/adjust)
-    if (shipToLines[i]) setCell(2 + i, 6, shipToLines[i], { fill: yellowFill });
+    // Ship to: auto-filled from PDF billing address — no yellow, already correct
+    if (shipToLines[i]) setCell(2 + i, 6, shipToLines[i]);
   }
   setCell(6, 1, "VAT number: NL006028317B01");
   setCell(7, 1, "Chambre of Commerce No.: 28036121");
@@ -350,21 +350,20 @@ async function buildExcel(invoice) {
   setCell(11, 1, "Delivery terms:", { font: boldFont });
   setCell(11, 3, invoice.deliveryTerms || "DDP", { fill: yellowFill });
 
-  // Row 12: Nett weight — auto-calculated from PDF (grams → KGS), yellow to verify
-  setCell(12, 1, "Nett weight:", { font: boldFont, fill: yellowFill });
-  setCell(12, 3, nettWeightStr, { fill: yellowFill });
+  // Row 12: Nett weight — auto from PDF, no yellow needed
+  setCell(12, 1, "Nett weight:", { font: boldFont });
+  setCell(12, 3, nettWeightStr);
 
-  // Row 13: Gross weight — must be filled manually (includes pallets), yellow + empty
-  setCell(13, 1, "Gross weight:", { font: boldFont, fill: yellowFill });
+  // Row 13: Gross weight — empty, must be filled manually → only the value cell is yellow
+  setCell(13, 1, "Gross weight:", { font: boldFont });
   setCell(13, 3, "", { fill: yellowFill });  // intentionally empty — manual input
 
   // Row 15: COMMERCIAL INVOICE
   setCell(15, 1, "COMMERCIAL INVOICE", { font: { name: "Arial", size: 11, bold: true } });
 
-  // Row 16: * for custom purposes only * — yellow, required by customs
+  // Row 16: * for custom purposes only * — standard text, no yellow needed
   setCell(16, 1, "* for custom purposes only *", {
     font: { name: "Arial", size: 10, italic: true },
-    fill: yellowFill,
   });
 
   // ── Column headers (row 18) — light blue fill ─────────────────────────
