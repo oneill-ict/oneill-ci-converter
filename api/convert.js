@@ -584,5 +584,8 @@ export default async function handler(req, res) {
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${exportName}.xlsx"`);
   res.setHeader("Content-Length", xlsxBuffer.byteLength);
+  // Expose validation stats so the frontend can show a summary
+  res.setHeader("X-Validation-Qty",   String(invoice._validation?.parsedQty   ?? ""));
+  res.setHeader("X-Validation-Total", String(invoice._validation?.parsedTotal ?? ""));
   return res.status(200).end(Buffer.from(xlsxBuffer));
 }
