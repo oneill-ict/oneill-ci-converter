@@ -103,7 +103,13 @@ function parseInvoiceText(text) {
   // ── Normalise text ────────────────────────────────────────────────────────
   // Collapse newlines to spaces so multi-line PDF cells don't break the regex.
   // Restrict to the items section to prevent false matches in the header block.
-  const flatText   = text.replace(/\n/g, " ");
+  // Collapse newlines; then re-merge digit pairs that were split across lines
+  // e.g. PDF "2100\n049" → "2100 049" → "2100049" so item numbers stay intact.
+  let flatText = text.replace(/\n/g, " ");
+  flatText = flatText.replace(/(?<!\d)(\d{2,6}) (\d{1,6})(?!\d)/g, (m, a, b) => {
+    const combined = a + b;
+    return combined.length === 7 ? combined : m;
+  });
   const itemsStart = flatText.indexOf("DiscountTotal");
 
   // The PDF may contain intermediate "Goods total" subtotals per page/category.

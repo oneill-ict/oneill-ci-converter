@@ -63,7 +63,11 @@ function extractCountry(g) {
 
 // ── Parse PDF ────────────────────────────────────────────────────────────────
 const data = await pdfParse(readFileSync("CommercialInvoice-.pdf"));
-const flatText   = data.text.replace(/\n/g, " ");
+let flatText = data.text.replace(/\n/g, " ");
+flatText = flatText.replace(/(?<!\d)(\d{2,6}) (\d{1,6})(?!\d)/g, (m, a, b) => {
+  const combined = a + b;
+  return combined.length === 7 ? combined : m;
+});
 const itemsStart = flatText.indexOf("DiscountTotal");
 const flatLower  = flatText.toLowerCase();
 const itemsEnd   = flatLower.lastIndexOf("goods total");
