@@ -1,5 +1,6 @@
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import ExcelJS from "exceljs";
+import JSZip from "jszip";
 
 export const config = { api: { bodyParser: { sizeLimit: "10mb" } } };
 
@@ -480,7 +481,20 @@ async function buildExcel(invoice) {
   });
 
   const buffer = await wb.xlsx.writeBuffer();
-  return buffer;
+
+  // ExcelJS always writes a VML content-type declaration even when there are no VML files.
+  // Excel detects the mismatch and shows a "found a problem" repair dialog.
+  // Fix: strip the orphaned VML declaration from [Content_Types].xml.
+  const zip = await JSZip.loadAsync(buffer);
+  const ctXml = await zip.files["[Content_Types].xml"].async("string");
+  const ctFixed = ctXml.replace(/<Default Extension="vml"[^>]*>/g, "");
+  zip.file("[Content_Types].xml", ctFixed);
+  const cleanBuffer = await zip.generateAsync({
+    type: "nodebuffer",
+    compression: "DEFLATE",
+    compressionOptions: { level: 6 },
+  });
+  return cleanBuffer;
 }
 
 // ── Handler ────────────────────────────────────────────────────────────────
