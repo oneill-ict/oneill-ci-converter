@@ -110,7 +110,7 @@ for (const block of blocks) {
   const grossWeight = parseEuropeanNumber(tariffGrM[2]);
   const midText   = block.slice(itemNoEnd, tariffPos);
 
-  const colourNoM = /(?<=[a-z]|(?<=\s)[A-Z]) *(\d{4,5})(?!\d)/.exec(midText);
+  const colourNoM = /(?<=[a-z]|(?<=\s)[A-Z]) *(\d{4,6})(?!\d)/.exec(midText);
   const colourNo  = colourNoM ? colourNoM[1] : "";
 
   const afterColourNo = colourNoM

@@ -127,7 +127,11 @@ function parseInvoiceText(text) {
   for (const block of blocks) {
     // Item number must appear (near the start of the block)
     const itemNoM = /(\d{7}|N\d{5})(?!\d)/.exec(block);
-    if (!itemNoM) continue;
+    if (!itemNoM) {
+      // Log blocks that have no item number so we can diagnose gaps
+      missedRows.push({ itemNo: "???", reason: "no item number in block", context: block.slice(0, 150).replace(/\s+/g, " ") });
+      continue;
+    }
     const itemNo    = itemNoM[1];
     const itemNoEnd = itemNoM.index + itemNo.length;
 
@@ -160,7 +164,7 @@ function parseInvoiceText(text) {
     // OR a single uppercase letter that itself follows a space (e.g. "Palms W 34041").
     // This prevents numbers embedded in ALL-CAPS item names (e.g. "RIGINALS 1952")
     // from matching because the uppercase S in RIGINALS is not preceded by a space.
-    const colourNoM = /(?<=[a-z]|(?<=\s)[A-Z]) *(\d{4,5})(?!\d)/.exec(midText);
+    const colourNoM = /(?<=[a-z]|(?<=\s)[A-Z]) *(\d{4,6})(?!\d)/.exec(midText);
     const colourNo  = colourNoM ? colourNoM[1] : "";
 
     // Country: text after colourNo and before tariff
@@ -220,10 +224,24 @@ function parseInvoiceText(text) {
     qtyOk   = expectedQty  === null || parsedQty === expectedQty;
   }
 
+  // Find item numbers present in itemsText but absent from parsed results — diagnostic
+  const parsedItemNos = new Set(invoice.items.map(i => i.itemNo));
+  const unparsedItemNos = [];
+  for (const c of itemsText.matchAll(/(?<!\d)(\d{7}|N\d{5})(?!\d)/g)) {
+    if (!parsedItemNos.has(c[1])) {
+      const pos = c.index;
+      unparsedItemNos.push({
+        itemNo: c[1],
+        context: itemsText.slice(Math.max(0, pos - 10), pos + 120).replace(/\s+/g, " "),
+      });
+    }
+  }
+
   invoice._validation = {
     valid: totalOk && qtyOk,
     parsedQty, parsedTotal, expectedQty, expectedTotal,
     totalOk, qtyOk, repairs, missedRows,
+    unparsedItemNos: [...new Map(unparsedItemNos.map(x => [x.itemNo, x])).values()],
   };
 
   // Invoice-level discount and VAT
@@ -510,8 +528,9 @@ export default async function handler(req, res) {
       expectedQty:   v.expectedQty,
       parsedTotal:   v.parsedTotal,
       expectedTotal: v.expectedTotal,
-      missedRows:    v.missedRows,
-      repairs:       v.repairs,
+      missedRows:       v.missedRows,
+      repairs:          v.repairs,
+      unparsedItemNos:  v.unparsedItemNos,
       allRows,
     });
   }
