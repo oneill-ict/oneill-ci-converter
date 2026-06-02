@@ -294,44 +294,88 @@ async function buildExcel(invoice) {
     if (style.numFmt)    cell.numFmt    = style.numFmt;
   };
 
-  // ── Header block ──────────────────────────────────────────────────────
+  // ── Fills & borders ───────────────────────────────────────────────────
+  const yellowFill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } };
+  const headerFill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFDDEEFF" } };
+  const headerBorder = { bottom: { style: "thin", color: { argb: "FF2A4457" } } };
 
-  setCell(1, 1, "Delivery address", { font: boldFont });
-  setCell(1, 4, "Billing address",  { font: boldFont });
-  setCell(1, 8, "O'Neill Europe B.V.", { font: boldFont });
-
-  const billingLines = [invoice.billingName, ...invoice.billingAddress];
-  const oneilLines   = ["Oosteinde 32", "2361 HE Warmond", "The Netherlands", "Phone No. +31715600800"];
-  for (let i = 0; i < 4; i++) {
-    setCell(2 + i, 4, billingLines[i] || "");
-    setCell(2 + i, 8, oneilLines[i]   || "");
+  // ── Helper: nett weight from PDF grossWeight string (grams → KGS) ─────
+  function parseGrossWeightKg(gwStr) {
+    if (!gwStr) return null;
+    const n = parseFloat(gwStr.replace(/\./g, "").replace(",", ".").replace(/[^\d.]/g, ""));
+    return isNaN(n) ? null : Math.round(n / 1000);
   }
-  setCell(6, 8, "CoC: 28036121");
-  setCell(7, 8, "VAT No.: NL006028317B01");
+  const nettWeightKg = parseGrossWeightKg(invoice.grossWeight);
+  const nettWeightStr = nettWeightKg != null ? `${nettWeightKg.toLocaleString("nl-NL")} KGS` : "";
 
-  setCell(10, 1, "Document No.",       { font: boldFont });
-  setCell(10, 3, invoice.orderNumber);
-  setCell(10, 6, "Nett weight",        { font: boldFont });
-  setCell(10, 8, invoice.grossWeight);
-  setCell(11, 1, "Date",               { font: boldFont });
-  setCell(11, 3, invoice.date);
-  setCell(12, 1, "Shipment number",    { font: boldFont });
-  setCell(12, 3, invoice.orderNumber);
-  setCell(13, 1, "Delivery condition.", { font: boldFont });
-  setCell(13, 3, invoice.deliveryTerms);
-  setCell(15, 1, "Commercial invoice", { font: { name: "Arial", size: 11, bold: true } });
+  // ── Date → DDMMYY for order number suggestion ─────────────────────────
+  // invoice.date may be "03-05-2026" or "2026-05-03"
+  let orderSuggestion = "";
+  try {
+    const parts = (invoice.date || "").split("-");
+    if (parts.length === 3) {
+      const [a, b, c] = parts;
+      const dd = a.length === 4 ? b.padStart(2,"0") : a.padStart(2,"0");
+      const mm = a.length === 4 ? c.padStart(2,"0") : b.padStart(2,"0");
+      const yy = a.length === 4 ? a.slice(2) : c.slice(2);
+      orderSuggestion = `${dd}${mm}${yy}-1`;
+    }
+  } catch {}
 
-  // ── Column headers (row 17) — light blue fill ──────────────────────────
+  // ── Header block (logistics format) ──────────────────────────────────
+  // Row 1: Shipper / Ship to labels
+  setCell(1, 1, "Shipper",  { font: boldFont });
+  setCell(1, 6, "Ship to",  { font: boldFont });
+
+  // Rows 2–7: Shipper = O'Neill (fixed) | Ship to = billing address from PDF (auto-filled)
+  const shipperLines = ["O'Neill Europe B.V.", "Oosteinde 32", "2361 HE Warmond", "The Netherlands"];
+  const shipToLines  = [invoice.billingName, ...(invoice.billingAddress || [])];
+  for (let i = 0; i < 4; i++) {
+    setCell(2 + i, 1, shipperLines[i] || "");
+    // Ship to: auto-filled from PDF billing address (yellow — user can verify/adjust)
+    if (shipToLines[i]) setCell(2 + i, 6, shipToLines[i], { fill: yellowFill });
+  }
+  setCell(6, 1, "VAT number: NL006028317B01");
+  setCell(7, 1, "Chambre of Commerce No.: 28036121");
+
+  // Row 9: Date
+  setCell(9, 1, "Date:", { font: boldFont });
+  setCell(9, 3, invoice.date);
+
+  // Row 10: Order / Invoice number — pre-filled with DDMMYY-1 suggestion, yellow for adjustment
+  setCell(10, 1, "Order number / Invoice nr.:", { font: boldFont });
+  setCell(10, 3, orderSuggestion || invoice.orderNumber, { fill: yellowFill });
+
+  // Row 11: Delivery terms — DDP from PDF, yellow because destination must be added manually
+  setCell(11, 1, "Delivery terms:", { font: boldFont });
+  setCell(11, 3, invoice.deliveryTerms || "DDP", { fill: yellowFill });
+
+  // Row 12: Nett weight — auto-calculated from PDF (grams → KGS), yellow to verify
+  setCell(12, 1, "Nett weight:", { font: boldFont, fill: yellowFill });
+  setCell(12, 3, nettWeightStr, { fill: yellowFill });
+
+  // Row 13: Gross weight — must be filled manually (includes pallets), yellow + empty
+  setCell(13, 1, "Gross weight:", { font: boldFont, fill: yellowFill });
+  setCell(13, 3, "", { fill: yellowFill });  // intentionally empty — manual input
+
+  // Row 15: COMMERCIAL INVOICE
+  setCell(15, 1, "COMMERCIAL INVOICE", { font: { name: "Arial", size: 11, bold: true } });
+
+  // Row 16: * for custom purposes only * — yellow, required by customs
+  setCell(16, 1, "* for custom purposes only *", {
+    font: { name: "Arial", size: 10, italic: true },
+    fill: yellowFill,
+  });
+
+  // ── Column headers (row 18) — light blue fill ─────────────────────────
 
   const headers = [
     "Item No.", "Item", "Colour", "Colour no.", "Country of origin",
     "Tariff No.", "Gross weight", "Quantity", "Price per piece (CHF)", "Discount (CHF)", "Total (CHF)",
   ];
-  const headerFill   = { type: "pattern", pattern: "solid", fgColor: { argb: "FFDDEEFF" } };
-  const headerBorder = { bottom: { style: "thin", color: { argb: "FF2A4457" } } };
 
   headers.forEach((h, i) => {
-    setCell(17, i + 1, h, {
+    setCell(18, i + 1, h, {
       font:      { name: "Arial", size: 10, bold: true },
       fill:      headerFill,
       border:    headerBorder,
@@ -339,9 +383,9 @@ async function buildExcel(invoice) {
     });
   });
 
-  // ── Data rows ─────────────────────────────────────────────────────────
+  // ── Data rows (start at 19) ───────────────────────────────────────────
 
-  const DATA_START = 18;
+  const DATA_START = 19;
 
   // Pre-calculate all totals (needed as formula results for Excel caching)
   invoice.items.forEach(item => {
