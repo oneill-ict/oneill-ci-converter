@@ -1,5 +1,5 @@
-import React, { useState, useRef, useCallback } from "react";
-import { Upload, CheckCircle2, AlertCircle, Loader2, FileDown, Archive, AlertTriangle } from "lucide-react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
+import { Upload, CheckCircle2, AlertCircle, Loader2, FileDown, Archive, AlertTriangle, Clock, Trash2 } from "lucide-react";
 import JSZip from "jszip";
 import { T } from "./lib/theme.js";
 
@@ -66,11 +66,22 @@ async function convertFile(file, force = false) {
 
 // ── App ─────────────────────────────────────────────────────────────────────
 
+const HISTORY_KEY = "oneill_ci_history";
+const MAX_HISTORY = 10;
+
+function loadHistory() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"); } catch { return []; }
+}
+function saveHistory(entries) {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, MAX_HISTORY))); } catch {}
+}
+
 export default function App() {
   const [phase, setPhase]       = useState("idle");  // idle | processing | done
   const [progress, setProgress] = useState({ i: 0, total: 0, name: "" });
   const [results, setResults]   = useState([]);
   const [dragging, setDragging] = useState(false);
+  const [history, setHistory]   = useState(loadHistory);
   const inputRef = useRef(null);
 
   const runBatch = useCallback(async (files) => {
@@ -108,6 +119,18 @@ export default function App() {
 
     setResults(batch);
     setPhase("done");
+
+    // Persist successful conversions to history
+    const newEntries = batch
+      .filter(r => !r.error && !r.isPartial)
+      .map(r => ({ name: r.xlsxName, qty: r.qty, total: r.total, ts: Date.now() }));
+    if (newEntries.length) {
+      setHistory(prev => {
+        const updated = [...newEntries, ...prev].slice(0, MAX_HISTORY);
+        saveHistory(updated);
+        return updated;
+      });
+    }
   }, []);
 
   // Force-download a partial result (user chose to accept the mismatch)
@@ -136,6 +159,7 @@ export default function App() {
   };
 
   const reset = () => { setPhase("idle"); setResults([]); setProgress({ i: 0, total: 0, name: "" }); };
+  const clearHistory = () => { saveHistory([]); setHistory([]); };
 
   const onFileChange = (e) => { if (e.target.files?.length) runBatch(e.target.files); e.target.value = ""; };
   const onDrop       = (e) => { e.preventDefault(); setDragging(false); if (e.dataTransfer.files?.length) runBatch(e.dataTransfer.files); };
@@ -166,7 +190,7 @@ export default function App() {
         }}
         onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}
       >
-        {phase === "idle"       && <UploadZone dragging={dragging} onPickFile={() => inputRef.current?.click()} />}
+        {phase === "idle"       && <UploadZone dragging={dragging} onPickFile={() => inputRef.current?.click()} history={history} onClearHistory={clearHistory} />}
         {phase === "processing" && <ProcessingState progress={progress} />}
         {phase === "done" && !isBatch && (
           <SingleDoneState result={results[0]} onReset={reset}
@@ -210,38 +234,90 @@ function triggerDownload(blob, name) {
 
 // ── sub-components ────────────────────────────────────────────────────────────
 
-function UploadZone({ dragging, onPickFile }) {
+function timeAgo(ts) {
+  const diff = Math.floor((Date.now() - ts) / 1000);
+  if (diff < 60)   return "zojuist";
+  if (diff < 3600) return `${Math.floor(diff / 60)} min geleden`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} uur geleden`;
+  const d = Math.floor(diff / 86400);
+  return d === 1 ? "gisteren" : `${d} dagen geleden`;
+}
+
+function UploadZone({ dragging, onPickFile, history, onClearHistory }) {
   return (
-    <div onClick={onPickFile} style={{ cursor: "pointer", textAlign: "center" }}>
-      <div style={{
-        width: 64, height: 64, borderRadius: 16,
-        background: dragging ? T.brandSoft : T.panelDeep,
-        border: `1px solid ${dragging ? T.brand : T.lineHi}`,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        margin: "0 auto 1.5rem", transition: "all 0.2s",
-      }}>
-        <Upload size={28} color={dragging ? T.brand : T.textMute} />
+    <div style={{ textAlign: "center" }}>
+      <div onClick={onPickFile} style={{ cursor: "pointer" }}>
+        <div style={{
+          width: 64, height: 64, borderRadius: 16,
+          background: dragging ? T.brandSoft : T.panelDeep,
+          border: `1px solid ${dragging ? T.brand : T.lineHi}`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          margin: "0 auto 1.5rem", transition: "all 0.2s",
+        }}>
+          <Upload size={28} color={dragging ? T.brand : T.textMute} />
+        </div>
+        <p style={{ fontFamily: "Inter, sans-serif", fontSize: "1rem", fontWeight: 600, color: T.text, marginBottom: "0.5rem" }}>
+          {dragging ? "Loslaten om te uploaden" : "Upload Commercial Invoice PDF"}
+        </p>
+        <p style={{ fontSize: "0.8rem", color: T.textDim, marginBottom: "1.75rem", lineHeight: 1.5 }}>
+          Sleep een of meerdere PDF's hierheen of klik om te bladeren
+        </p>
+        <button type="button" style={{
+          background: T.brand, color: "#071520", border: "none", borderRadius: 10,
+          padding: "0.625rem 1.5rem", fontFamily: "Inter, sans-serif",
+          fontWeight: 600, fontSize: "0.875rem", cursor: "pointer", transition: "opacity 0.15s",
+        }}
+          onMouseEnter={e => e.currentTarget.style.opacity = "0.85"}
+          onMouseLeave={e => e.currentTarget.style.opacity = "1"}
+        >
+          Kies bestand(en)
+        </button>
+        <p style={{ marginTop: "1.5rem", fontSize: "0.72rem", color: T.textGhost, lineHeight: 1.6 }}>
+          Ondersteunde structuur: O'Neill Commercial Invoice<br />
+          Output: Excel (.xlsx) met tariefsubtotalen
+        </p>
       </div>
-      <p style={{ fontFamily: "Inter, sans-serif", fontSize: "1rem", fontWeight: 600, color: T.text, marginBottom: "0.5rem" }}>
-        {dragging ? "Loslaten om te uploaden" : "Upload Commercial Invoice PDF"}
-      </p>
-      <p style={{ fontSize: "0.8rem", color: T.textDim, marginBottom: "1.75rem", lineHeight: 1.5 }}>
-        Sleep een of meerdere PDF's hierheen of klik om te bladeren
-      </p>
-      <button type="button" style={{
-        background: T.brand, color: "#071520", border: "none", borderRadius: 10,
-        padding: "0.625rem 1.5rem", fontFamily: "Inter, sans-serif",
-        fontWeight: 600, fontSize: "0.875rem", cursor: "pointer", transition: "opacity 0.15s",
-      }}
-        onMouseEnter={e => e.currentTarget.style.opacity = "0.85"}
-        onMouseLeave={e => e.currentTarget.style.opacity = "1"}
-      >
-        Kies bestand(en)
-      </button>
-      <p style={{ marginTop: "1.5rem", fontSize: "0.72rem", color: T.textGhost, lineHeight: 1.6 }}>
-        Ondersteunde structuur: O'Neill Commercial Invoice<br />
-        Output: Excel (.xlsx) met tariefsubtotalen
-      </p>
+
+      {history.length > 0 && (
+        <div style={{ marginTop: "1.75rem", textAlign: "left" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.5rem" }}>
+            <span style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.7rem", color: T.textDim, fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase" }}>
+              <Clock size={12} /> Recent
+            </span>
+            <button type="button" onClick={(e) => { e.stopPropagation(); onClearHistory(); }} style={{
+              background: "transparent", border: "none", cursor: "pointer", padding: "0.15rem 0.3rem",
+              display: "flex", alignItems: "center", gap: "0.25rem",
+              fontSize: "0.68rem", color: T.textGhost, borderRadius: 4,
+            }}
+              onMouseEnter={e => e.currentTarget.style.color = T.bad}
+              onMouseLeave={e => e.currentTarget.style.color = T.textGhost}
+            >
+              <Trash2 size={11} /> Wissen
+            </button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem" }}>
+            {history.map((h, i) => (
+              <div key={i} style={{
+                background: T.panelDeep, borderRadius: 8, padding: "0.45rem 0.75rem",
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                border: `1px solid ${T.line}`,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", minWidth: 0 }}>
+                  <CheckCircle2 size={12} color={T.good} style={{ flexShrink: 0 }} />
+                  <span style={{ fontSize: "0.75rem", color: T.text, fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {h.name}
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: "0.75rem", flexShrink: 0, marginLeft: "0.75rem" }}>
+                  <span style={{ fontSize: "0.7rem", color: T.good }}>{h.qty} regels</span>
+                  <span style={{ fontSize: "0.7rem", color: T.textDim, fontFamily: "JetBrains Mono, monospace" }}>CHF {fmtCHF(h.total)}</span>
+                  <span style={{ fontSize: "0.68rem", color: T.textGhost }}>{timeAgo(h.ts)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
