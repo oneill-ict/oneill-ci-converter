@@ -281,8 +281,8 @@ async function buildExcel(invoice) {
   wb.creator = "O'Neill CI Converter";
   const ws = wb.addWorksheet("Commercial Invoice");
 
-  // Freeze header block + column label row so they stay visible while scrolling
-  ws.views = [{ state: "frozen", ySplit: 18, activeCell: "A19" }];
+  // Freeze header block + column label row; hide gridlines for clean document look
+  ws.views = [{ state: "frozen", ySplit: 18, activeCell: "A19", showGridLines: false }];
 
   const hFont    = { name: "Arial", size: 10 };
   const boldFont = { name: "Arial", size: 10, bold: true };
@@ -303,9 +303,29 @@ async function buildExcel(invoice) {
   const greyFill      = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } };
   const tariffHdrFill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2A4A6B" } };
 
-  const rowBorder     = { bottom: { style: "thin",   color: { argb: "FFD8E0EA" } } };
+  const thinLine      = { style: "thin",   color: { argb: "FFD8E0EA" } };
+  const fullBorder    = { top: thinLine, bottom: thinLine, left: thinLine, right: thinLine };
   const headerBorder  = { bottom: { style: "medium", color: { argb: "FF1F4E79" } } };
   const summaryBorder = { top:    { style: "medium", color: { argb: "FF1F4E79" } } };
+  const tableCloseBorder = { bottom: { style: "medium", color: { argb: "FF1F4E79" } } };
+
+  // ── Cell merges for document layout ──────────────────────────────────
+  // Shipper / Ship to two-column header block
+  ws.mergeCells("A1:E1");  ws.mergeCells("F1:K1");
+  for (let i = 0; i < 4; i++) {
+    ws.mergeCells(`A${2+i}:E${2+i}`);
+    ws.mergeCells(`F${2+i}:K${2+i}`);
+  }
+  ws.mergeCells("A6:E6");  ws.mergeCells("A7:E7");
+  // Label : value rows — value cells span to col K (order nr can be very long)
+  ws.mergeCells("A9:B9");   ws.mergeCells("C9:K9");
+  ws.mergeCells("A10:B10"); ws.mergeCells("C10:K10");
+  ws.mergeCells("A11:B11"); ws.mergeCells("C11:K11");
+  ws.mergeCells("A12:B12"); ws.mergeCells("C12:K12");
+  ws.mergeCells("A13:B13"); ws.mergeCells("C13:K13");
+  // Title block — full width, centred
+  ws.mergeCells("A15:K15");
+  ws.mergeCells("A16:K16");
 
   // ── Helper: nett weight from PDF grossWeight string (grams → KGS) ─────
   function parseGrossWeightKg(gwStr) {
@@ -366,13 +386,17 @@ async function buildExcel(invoice) {
   setCell(13, 1, "Gross weight:", { font: boldFont });
   setCell(13, 3, "");
 
-  // Row 15: COMMERCIAL INVOICE
+  // Row 15: COMMERCIAL INVOICE — full width, centred
   ws.getRow(15).height = 20;
-  setCell(15, 1, "COMMERCIAL INVOICE", { font: { name: "Arial", size: 12, bold: true } });
+  setCell(15, 1, "COMMERCIAL INVOICE", {
+    font:      { name: "Arial", size: 12, bold: true },
+    alignment: { horizontal: "center", vertical: "middle" },
+  });
 
-  // Row 16: * for custom purposes only * — standard text, no yellow needed
+  // Row 16: * for custom purposes only * — full width, centred
   setCell(16, 1, "* for custom purposes only *", {
-    font: { name: "Arial", size: 10, italic: true },
+    font:      { name: "Arial", size: 10, italic: true },
+    alignment: { horizontal: "center", vertical: "middle" },
   });
 
   // ── Column headers (row 18) — light blue fill ─────────────────────────
@@ -405,20 +429,23 @@ async function buildExcel(invoice) {
   const invoiceDiscount  = invoice.invoiceDiscount || 0;
   const grandTotal       = round2(goodsTotalAmount - invoiceDiscount + invoice.vat);
 
+  const lastDataRow  = DATA_START + invoice.items.length - 1;
+
   invoice.items.forEach((item, idx) => {
     const r       = DATA_START + idx;
     const altFill = idx % 2 === 1 ? rowAltFill : null;
+    // Last data row gets a medium bottom border to close the table
+    const isLast  = r === lastDataRow;
+    const bdr     = isLast
+      ? { ...fullBorder, bottom: tableCloseBorder.bottom }
+      : fullBorder;
 
     const cd = (colNum, value, extra = {}) => {
       const cell = ws.getCell(r, colNum);
       cell.value = value;
       cell.font  = hFont;
       if (altFill) cell.fill = altFill;
-      cell.border = {
-        ...rowBorder,
-        ...(colNum === 1  ? { left:  { style: "thin", color: { argb: "FFD8E0EA" } } } : {}),
-        ...(colNum === 11 ? { right: { style: "thin", color: { argb: "FFD8E0EA" } } } : {}),
-      };
+      cell.border = bdr;
       if (extra.numFmt)    cell.numFmt    = extra.numFmt;
       if (extra.alignment) cell.alignment = extra.alignment;
     };
@@ -443,14 +470,13 @@ async function buildExcel(invoice) {
     tc.font      = hFont;
     tc.alignment = { horizontal: "right" };
     if (altFill) tc.fill = altFill;
-    tc.border    = { ...rowBorder, right: { style: "thin", color: { argb: "FFD8E0EA" } } };
+    tc.border    = bdr;
 
     ws.getRow(r).height = 15.75;
   });
 
   // ── Summary rows ──────────────────────────────────────────────────────
 
-  const lastDataRow  = DATA_START + invoice.items.length - 1;
   const summaryStart = lastDataRow + 2;
 
   const gtRow = summaryStart;

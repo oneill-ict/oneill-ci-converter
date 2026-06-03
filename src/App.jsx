@@ -334,8 +334,9 @@ export default function App() {
         {t.footer}
       </p>
       <style>{`
-        @keyframes spin    { to { transform: rotate(360deg); } }
-        @keyframes fadeIn  { from { opacity:0; transform: translateY(6px); } to { opacity:1; transform: translateY(0); } }
+        @keyframes spin      { to { transform: rotate(360deg); } }
+        @keyframes fadeIn    { from { opacity:0; transform: translateY(6px); } to { opacity:1; transform: translateY(0); } }
+        @keyframes wavePulse { 0%,100%{transform:scaleY(0.2);opacity:0.3} 50%{transform:scaleY(1);opacity:1} }
         .preview-table     { width:100%; border-collapse:collapse; font-size:0.72rem; }
         .preview-table th  { text-align:left; padding:0.3rem 0.5rem; color:${T.textDim}; font-weight:600; border-bottom:1px solid ${T.line}; white-space:nowrap; }
         .preview-table td  { padding:0.28rem 0.5rem; color:${T.text}; border-bottom:1px solid ${T.panelDeep}; }
@@ -445,11 +446,27 @@ function UploadZone({ dragging, onPickFile, history, onClearHistory, t }) {
   );
 }
 
+function WaveLoader() {
+  return (
+    <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "center", gap: 5, height: 48, marginBottom: "1.5rem" }}>
+      {[0, 1, 2, 3, 4].map(i => (
+        <div key={i} style={{
+          width: 6, height: 36, borderRadius: 3,
+          background: T.brand,
+          animation: "wavePulse 1.1s ease-in-out infinite",
+          animationDelay: `${i * 0.14}s`,
+          transformOrigin: "bottom center",
+        }} />
+      ))}
+    </div>
+  );
+}
+
 function ProcessingState({ progress, t }) {
   const pct = progress.total > 1 ? Math.round((progress.i - 1) / progress.total * 100) : 0;
   return (
     <div style={{ textAlign: "center", padding: "1rem 0" }}>
-      <Loader2 size={40} color={T.brand} style={{ animation: "spin 1s linear infinite", marginBottom: "1.5rem" }} />
+      <WaveLoader />
       {progress.total > 1 && (
         <>
           <p style={{ fontSize: "0.75rem", color: T.textDim, marginBottom: "0.5rem" }}>{t.processingOf(progress.i, progress.total)}</p>
