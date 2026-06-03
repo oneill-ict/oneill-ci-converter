@@ -164,7 +164,7 @@ function parseInvoiceText(text) {
 
     // Tariff number (10 digits) immediately followed by gross weight digits + "gr"
     // e.g. "6206300090240,00 gr" — no space between tariff and weight in PDF output
-    const tariffGrM = /(\d{10})(\d+[.,]\d+)\s*gr/.exec(block);
+    const tariffGrM = /(\d{10})(\d[\d.]*,\d+)\s*gr/.exec(block);
     if (!tariffGrM) {
       missedRows.push({ itemNo, reason: "no tariff+gr", context: block.slice(0, 200).replace(/\s+/g, " ") });
       continue;

@@ -26,6 +26,7 @@ const i18n = {
     mismatchTitle: "Aantal regels komt niet overeen",
     mismatchFound: "Gevonden:",
     mismatchExp:   "Verwacht:",
+    missedItemsLabel: "Ontbrekend in export",
     downloadAnyway:"Download toch",
     failTitle:     "Verwerking mislukt",
     filesOf:       (s, n) => `${s} van ${n} bestanden verwerkt`,
@@ -69,6 +70,7 @@ const i18n = {
     mismatchTitle: "Line count mismatch",
     mismatchFound: "Found:",
     mismatchExp:   "Expected:",
+    missedItemsLabel: "Missing from export",
     downloadAnyway:"Download anyway",
     failTitle:     "Processing failed",
     filesOf:       (s, n) => `${s} of ${n} files processed`,
@@ -141,6 +143,7 @@ async function convertFile(file, force = false) {
       e.expectedQty  = err.expectedQty;
       e.parsedTotal  = err.parsedTotal;
       e.expectedTotal = err.expectedTotal;
+      e.missedRows   = err.missedRows || [];
       throw e;
     }
     throw new Error(err.error || `HTTP ${res.status}`);
@@ -201,12 +204,21 @@ export default function App() {
         batch.push({ name: file.name, xlsxName, blob, qty, total, preview, error: null, isPartial: false, file });
       } catch (e) {
         if (e.isPartial) {
-          // Validation mismatch — store for friendly warning UI
+          // Validation mismatch — auto-download the export anyway so the team can continue,
+          // then show the warning with details about what was missed.
+          let autoBlob = null, autoPreview = [];
+          try {
+            const forced = await convertFile(file, true);
+            autoBlob    = forced.blob;
+            autoPreview = forced.preview;
+            if (pdfs.length === 1) triggerDownload(autoBlob, xlsxName);
+          } catch {}
           batch.push({
-            name: file.name, xlsxName, blob: null,
+            name: file.name, xlsxName, blob: autoBlob,
             qty: e.parsedQty, total: e.parsedTotal,
             expectedQty: e.expectedQty, expectedTotal: e.expectedTotal,
-            preview: [], error: null, isPartial: true, file,
+            missedRows: e.missedRows || [],
+            preview: autoPreview, error: null, isPartial: true, file,
           });
         } else {
           batch.push({ name: file.name, xlsxName, blob: null, qty: null, total: null, preview: [], error: e.message, isPartial: false, file });
@@ -230,8 +242,9 @@ export default function App() {
     }
   }, []);
 
-  // Force-download a partial result (user chose to accept the mismatch)
+  // Force-download a partial result. If blob is already stored (auto-downloaded), just re-trigger.
   const downloadForce = useCallback(async (r) => {
+    if (r.blob) { triggerDownload(r.blob, r.xlsxName); return; }
     setResults(prev => prev.map(p => p === r ? { ...p, forceLoading: true } : p));
     try {
       const { blob, qty, total, preview } = await convertFile(r.file, true);
@@ -509,6 +522,7 @@ function ValidationBadge({ qty, total, t }) {
 }
 
 function PartialWarning({ result, onForceDownload, t }) {
+  const named = (result.missedRows || []).filter(r => r.itemNo !== "???");
   return (
     <div style={{
       background: "#1a1200", border: `1px solid #b86e00`, borderRadius: 10,
@@ -518,19 +532,25 @@ function PartialWarning({ result, onForceDownload, t }) {
         <AlertTriangle size={16} color="#f59e0b" />
         <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#f59e0b" }}>{t.mismatchTitle}</span>
       </div>
-      <p style={{ fontSize: "0.78rem", color: T.textDim, marginBottom: "0.75rem", lineHeight: 1.5 }}>
+      <p style={{ fontSize: "0.78rem", color: T.textDim, lineHeight: 1.5 }}>
         {t.mismatchFound} <strong style={{ color: T.text }}>{result.qty} {t.rows} · CHF {fmtCHF(result.total)}</strong><br />
         {t.mismatchExp} <strong style={{ color: T.text }}>{result.expectedQty} {t.rows} · CHF {fmtCHF(result.expectedTotal)}</strong>
       </p>
+      {named.length > 0 && (
+        <p style={{ fontSize: "0.72rem", color: T.textDim, marginTop: "0.35rem", fontFamily: "JetBrains Mono, monospace" }}>
+          {t.missedItemsLabel}: {named.map(r => r.itemNo).join(", ")}
+        </p>
+      )}
       <button type="button" onClick={onForceDownload} disabled={result.forceLoading} style={{
         background: "#f59e0b", color: "#1a0e00", border: "none", borderRadius: 8,
         padding: "0.4rem 0.9rem", fontFamily: "Inter, sans-serif",
         fontWeight: 600, fontSize: "0.8rem", cursor: result.forceLoading ? "wait" : "pointer",
         opacity: result.forceLoading ? 0.6 : 1,
         display: "inline-flex", alignItems: "center", gap: "0.4rem",
+        marginTop: "0.75rem",
       }}>
         {result.forceLoading ? <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} /> : <FileDown size={13} />}
-        {t.downloadAnyway}
+        {result.blob ? t.redownload : t.downloadAnyway}
       </button>
     </div>
   );
