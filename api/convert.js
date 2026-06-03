@@ -279,7 +279,10 @@ function col(n) {
 async function buildExcel(invoice) {
   const wb = new ExcelJS.Workbook();
   wb.creator = "O'Neill CI Converter";
-  const ws = wb.addWorksheet("Worksheet");
+  const ws = wb.addWorksheet("Commercial Invoice");
+
+  // Freeze header block + column label row so they stay visible while scrolling
+  ws.views = [{ state: "frozen", ySplit: 18, activeCell: "A19" }];
 
   const hFont    = { name: "Arial", size: 10 };
   const boldFont = { name: "Arial", size: 10, bold: true };
@@ -295,9 +298,14 @@ async function buildExcel(invoice) {
   };
 
   // ── Fills & borders ───────────────────────────────────────────────────
-  const yellowFill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } };
-  const headerFill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFDDEEFF" } };
-  const headerBorder = { bottom: { style: "thin", color: { argb: "FF2A4457" } } };
+  const headerFill    = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E79" } };
+  const rowAltFill    = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF0F4FA" } };
+  const greyFill      = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } };
+  const tariffHdrFill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2A4A6B" } };
+
+  const rowBorder     = { bottom: { style: "thin",   color: { argb: "FFD8E0EA" } } };
+  const headerBorder  = { bottom: { style: "medium", color: { argb: "FF1F4E79" } } };
+  const summaryBorder = { top:    { style: "medium", color: { argb: "FF1F4E79" } } };
 
   // ── Helper: nett weight from PDF grossWeight string (grams → KGS) ─────
   function parseGrossWeightKg(gwStr) {
@@ -342,24 +350,25 @@ async function buildExcel(invoice) {
   setCell(9, 1, "Date:", { font: boldFont });
   setCell(9, 3, invoice.date);
 
-  // Row 10: Order / Invoice number — pre-filled with DDMMYY-1 suggestion, yellow for adjustment
+  // Row 10: Order / Invoice number
   setCell(10, 1, "Order number / Invoice nr.:", { font: boldFont });
-  setCell(10, 3, orderSuggestion || invoice.orderNumber, { fill: yellowFill });
+  setCell(10, 3, orderSuggestion || invoice.orderNumber);
 
-  // Row 11: Delivery terms — DDP from PDF, yellow because destination must be added manually
+  // Row 11: Delivery terms
   setCell(11, 1, "Delivery terms:", { font: boldFont });
-  setCell(11, 3, invoice.deliveryTerms || "DDP", { fill: yellowFill });
+  setCell(11, 3, invoice.deliveryTerms || "DDP");
 
-  // Row 12: Nett weight — auto from PDF, no yellow needed
+  // Row 12: Nett weight
   setCell(12, 1, "Nett weight:", { font: boldFont });
   setCell(12, 3, nettWeightStr);
 
-  // Row 13: Gross weight — empty, must be filled manually → only the value cell is yellow
+  // Row 13: Gross weight — empty, fill in manually
   setCell(13, 1, "Gross weight:", { font: boldFont });
-  setCell(13, 3, "", { fill: yellowFill });  // intentionally empty — manual input
+  setCell(13, 3, "");
 
   // Row 15: COMMERCIAL INVOICE
-  setCell(15, 1, "COMMERCIAL INVOICE", { font: { name: "Arial", size: 11, bold: true } });
+  ws.getRow(15).height = 20;
+  setCell(15, 1, "COMMERCIAL INVOICE", { font: { name: "Arial", size: 12, bold: true } });
 
   // Row 16: * for custom purposes only * — standard text, no yellow needed
   setCell(16, 1, "* for custom purposes only *", {
@@ -373,9 +382,10 @@ async function buildExcel(invoice) {
     "Tariff No.", "Gross weight", "Quantity", "Price per piece (CHF)", "Discount (CHF)", "Total (CHF)",
   ];
 
+  ws.getRow(18).height = 22;
   headers.forEach((h, i) => {
     setCell(18, i + 1, h, {
-      font:      { name: "Arial", size: 10, bold: true },
+      font:      { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } },
       fill:      headerFill,
       border:    headerBorder,
       alignment: { horizontal: i >= 6 ? "right" : "left", vertical: "middle" },
@@ -396,27 +406,46 @@ async function buildExcel(invoice) {
   const grandTotal       = round2(goodsTotalAmount - invoiceDiscount + invoice.vat);
 
   invoice.items.forEach((item, idx) => {
-    const r = DATA_START + idx;
+    const r       = DATA_START + idx;
+    const altFill = idx % 2 === 1 ? rowAltFill : null;
+
+    const cd = (colNum, value, extra = {}) => {
+      const cell = ws.getCell(r, colNum);
+      cell.value = value;
+      cell.font  = hFont;
+      if (altFill) cell.fill = altFill;
+      cell.border = {
+        ...rowBorder,
+        ...(colNum === 1  ? { left:  { style: "thin", color: { argb: "FFD8E0EA" } } } : {}),
+        ...(colNum === 11 ? { right: { style: "thin", color: { argb: "FFD8E0EA" } } } : {}),
+      };
+      if (extra.numFmt)    cell.numFmt    = extra.numFmt;
+      if (extra.alignment) cell.alignment = extra.alignment;
+    };
 
     // Keep N-prefixed item numbers (e.g. N03204) as string; pure digits as number
     const itemNoVal = /^\d+$/.test(item.itemNo) ? parseInt(item.itemNo, 10) : item.itemNo;
-    setCell(r, 1, itemNoVal, { alignment: { horizontal: "left" } });
-    setCell(r, 2, item.item);
-    setCell(r, 3, item.colour);
-    setCell(r, 4, item.colourNo,  { alignment: { horizontal: "left" } });
-    setCell(r, 5, item.country);
-    setCell(r, 6, item.tariffNo,  { alignment: { horizontal: "left" } });
-    setCell(r, 7, item.grossWeight,   { numFmt: "#,##0.00", alignment: { horizontal: "right" } });
-    setCell(r, 8, item.quantity,      { numFmt: "#,##0",    alignment: { horizontal: "right" } });
-    setCell(r, 9, item.pricePerPiece, { numFmt: "#,##0.00", alignment: { horizontal: "right" } });
-    setCell(r, 10, item.discount,     { numFmt: "#,##0.00", alignment: { horizontal: "right" } });
+    cd(1,  itemNoVal,          { alignment: { horizontal: "left" } });
+    cd(2,  item.item);
+    cd(3,  item.colour);
+    cd(4,  item.colourNo,      { alignment: { horizontal: "left" } });
+    cd(5,  item.country);
+    cd(6,  item.tariffNo,      { alignment: { horizontal: "left" } });
+    cd(7,  item.grossWeight,   { numFmt: "#,##0.00", alignment: { horizontal: "right" } });
+    cd(8,  item.quantity,      { numFmt: "#,##0",    alignment: { horizontal: "right" } });
+    cd(9,  item.pricePerPiece, { numFmt: "#,##0.00", alignment: { horizontal: "right" } });
+    cd(10, item.discount,      { numFmt: "#,##0.00", alignment: { horizontal: "right" } });
 
     // Total — formula with pre-calculated result so cache is populated
-    const tc    = ws.getCell(r, 11);
-    tc.value    = { formula: `H${r}*I${r}-J${r}`, result: item._total };
-    tc.numFmt   = "#,##0.00";
-    tc.font     = hFont;
+    const tc     = ws.getCell(r, 11);
+    tc.value     = { formula: `H${r}*I${r}-J${r}`, result: item._total };
+    tc.numFmt    = "#,##0.00";
+    tc.font      = hFont;
     tc.alignment = { horizontal: "right" };
+    if (altFill) tc.fill = altFill;
+    tc.border    = { ...rowBorder, right: { style: "thin", color: { argb: "FFD8E0EA" } } };
+
+    ws.getRow(r).height = 15.75;
   });
 
   // ── Summary rows ──────────────────────────────────────────────────────
@@ -425,14 +454,13 @@ async function buildExcel(invoice) {
   const summaryStart = lastDataRow + 2;
 
   const gtRow = summaryStart;
-  setCell(gtRow, 1, "Goods total", { font: boldFont });
+  setCell(gtRow, 1, "Goods total", { font: boldFont, border: summaryBorder });
   const qtySum  = ws.getCell(gtRow, 8);
   qtySum.value  = { formula: `SUM(H${DATA_START}:H${lastDataRow})`, result: goodsTotalQty };
-  qtySum.numFmt = "#,##0"; qtySum.font = boldFont; qtySum.alignment = { horizontal: "right" };
+  qtySum.numFmt = "#,##0"; qtySum.font = boldFont; qtySum.alignment = { horizontal: "right" }; qtySum.border = summaryBorder;
   const amtSum  = ws.getCell(gtRow, 11);
   amtSum.value  = { formula: `SUM(K${DATA_START}:K${lastDataRow})`, result: goodsTotalAmount };
-  amtSum.numFmt = "#,##0.00"; amtSum.font = boldFont; amtSum.alignment = { horizontal: "right" };
-  // Note intentionally removed: ExcelJS VML drawing for notes causes Excel repair warnings
+  amtSum.numFmt = "#,##0.00"; amtSum.font = boldFont; amtSum.alignment = { horizontal: "right" }; amtSum.border = summaryBorder;
 
   const hasDiscount = invoiceDiscount > 0;
   const discRow = hasDiscount ? summaryStart + 1 : null;
@@ -459,25 +487,26 @@ async function buildExcel(invoice) {
   vatCell.numFmt = "#,##0.00"; vatCell.font = boldFont; vatCell.alignment = { horizontal: "right" };
 
   const totRow = summaryStart + (hasDiscount ? 4 : 3);
-  setCell(totRow, 1, "Total", { font: boldFont });
+  setCell(totRow, 1, "Total", { font: { name: "Arial", size: 11, bold: true } });
   const totCell2    = ws.getCell(totRow, 11);
   totCell2.value    = { formula: `K${stRow}+K${vatRow}`, result: grandTotal };
   totCell2.numFmt   = "#,##0.00";
-  totCell2.font     = { name: "Arial", size: 10, bold: true };
+  totCell2.font     = { name: "Arial", size: 11, bold: true };
   totCell2.alignment = { horizontal: "right" };
 
-  // ── Tariff subtotals — grey fill, bold ────────────────────────────────
+  // ── Tariff subtotals ──────────────────────────────────────────────────
 
   const lastRow = lastDataRow;
   const tariffSectionStart = totRow + 3;
-  const greyFill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } };
 
   setCell(tariffSectionStart, 1, "SUBTOTAL TARIFF NO.", { font: boldFont });
   setCell(tariffSectionStart + 1, 1, "Tariff No.", {
-    font: boldFont, fill: greyFill, border: headerBorder,
+    font: { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } },
+    fill: tariffHdrFill, border: headerBorder,
   });
   setCell(tariffSectionStart + 1, 2, "Subtotal (CHF)", {
-    font: boldFont, fill: greyFill, border: headerBorder, alignment: { horizontal: "right" },
+    font: { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } },
+    fill: tariffHdrFill, border: headerBorder, alignment: { horizontal: "right" },
   });
 
   const seen = new Set();
@@ -496,34 +525,29 @@ async function buildExcel(invoice) {
   const totalCol  = `$K$${DATA_START}:$K$${lastRow}`;
 
   uniqueTariffs.forEach((tariff, i) => {
-    const r = tariffSectionStart + 2 + i;
-    setCell(r, 1, tariff, { font: boldFont, fill: greyFill });
+    const r    = tariffSectionStart + 2 + i;
+    const fill = i % 2 === 1 ? greyFill : null;
+    setCell(r, 1, tariff, { font: boldFont, ...(fill ? { fill } : {}) });
     const sc     = ws.getCell(r, 2);
     sc.value     = { formula: `SUMIF(${tariffCol},A${r},${totalCol})`, result: tariffTotals[tariff] || 0 };
     sc.numFmt    = "#,##0.00";
     sc.font      = boldFont;
-    sc.fill      = greyFill;
+    if (fill) sc.fill = fill;
     sc.alignment = { horizontal: "right" };
   });
 
-  // ── Auto-fit column widths based on content ───────────────────────────
+  // ── Column widths ─────────────────────────────────────────────────────
+  // Fixed widths tuned to content: Item col wide enough for longest names (~47 chars)
+  [12, 44, 26, 12, 18, 14, 14, 10, 22, 15, 14].forEach((w, i) => {
+    ws.getColumn(i + 1).width = w;
+  });
 
-  const colMaxLen = Array(11).fill(0);
-  // Seed with header lengths
-  headers.forEach((h, i) => { colMaxLen[i] = Math.max(colMaxLen[i], h.length); });
-  // Data rows
-  invoice.items.forEach(item => {
-    const vals = [
-      String(item.itemNo), item.item, item.colour, item.colourNo,
-      item.country, item.tariffNo,
-      item.grossWeight.toFixed(2), String(item.quantity),
-      item.pricePerPiece.toFixed(2), item.discount.toFixed(2), "formula",
-    ];
-    vals.forEach((v, i) => { colMaxLen[i] = Math.max(colMaxLen[i], v.length); });
-  });
-  colMaxLen.forEach((len, i) => {
-    ws.getColumn(i + 1).width = Math.min(Math.max(len + 2, 10), 45);
-  });
+  // ── Print setup: A4 landscape, fit to 1 page wide ─────────────────────
+  ws.pageSetup.orientation = "landscape";
+  ws.pageSetup.fitToPage   = true;
+  ws.pageSetup.fitToWidth  = 1;
+  ws.pageSetup.fitToHeight = 0;
+  ws.pageSetup.paperSize   = 9;
 
   const buffer = await wb.xlsx.writeBuffer();
 
