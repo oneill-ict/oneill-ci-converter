@@ -101,6 +101,20 @@ function parseInvoiceText(text) {
     invoice.billingAddress = addrLines.slice(1);
   }
 
+  // ── Auto-city: append destination city to DDP delivery terms ──────────────
+  // Looks for a postal-code line in the ship-to address (e.g. "CH-4303 Kaiseraugst")
+  const _cityM = (invoice.billingAddress || [])
+    .map(l => /(?:[A-Z]{2}-\d{3,5}|\d{3,5}(?:\s+[A-Z]{2})?)\s+([A-Za-züöäÜÖÄ][A-Za-züöäÜÖÄ\-]+)/.exec(l))
+    .find(Boolean);
+  if (_cityM && invoice.deliveryTerms === "DDP") {
+    invoice.deliveryTerms = `DDP ${_cityM[1].trim()}`;
+  }
+
+  // ── B2B detection: Spedag / Kaiseraugst ship-to = B2B invoice ─────────────
+  invoice.isB2B = [invoice.billingName, ...(invoice.billingAddress || [])].some(l =>
+    /spedag|kaiseraugst/i.test(l)
+  );
+
   // ── Normalise text ────────────────────────────────────────────────────────
   // Collapse newlines to spaces so multi-line PDF cells don't break the regex.
   // Restrict to the items section to prevent false matches in the header block.
@@ -403,7 +417,7 @@ async function buildExcel(invoice) {
 
   const headers = [
     "Item No.", "Item", "Colour", "Colour no.", "Country of origin",
-    "Tariff No.", "Gross weight", "Quantity", "Price per piece (CHF)", "Discount (CHF)", "Total (CHF)",
+    "Tariff No.", "Nett weight", "Quantity", "Price per piece (CHF)", "Discount (CHF)", "Total (CHF)",
   ];
 
   ws.getRow(18).height = 22;
@@ -561,6 +575,38 @@ async function buildExcel(invoice) {
     if (fill) sc.fill = fill;
     sc.alignment = { horizontal: "right" };
   });
+
+  // ── Legal / customs footer ────────────────────────────────────────────────
+  // Turkish-origin declaration + VAT/UID on every invoice;
+  // custom clearance agent block only on B2B invoices (auto-detected above).
+  const footerStart = tariffSectionStart + uniqueTariffs.length + 3;
+
+  // Merge footer text rows full-width so long text wraps correctly
+  ws.mergeCells(`A${footerStart}:K${footerStart}`);
+  ws.mergeCells(`A${footerStart + 1}:K${footerStart + 1}`);
+  ws.mergeCells(`A${footerStart + 3}:K${footerStart + 3}`);
+  ws.mergeCells(`A${footerStart + 5}:K${footerStart + 5}`);
+  ws.mergeCells(`A${footerStart + 6}:K${footerStart + 6}`);
+
+  setCell(footerStart, 1, "Bei Waren türkischen Ursprungs:", { font: boldFont });
+  setCell(footerStart + 1, 1,
+    "Der Ausführer der Waren, auf die sich diese Handelspapiere beziehen, erklärt, dass diese Waren, soweit nicht anders angegeben, präferenzbegünstigte Türkische Ursprungswaren sind.",
+    { font: hFont, alignment: { wrapText: true, vertical: "top" } }
+  );
+  ws.getRow(footerStart + 1).height = 36;
+
+  setCell(footerStart + 3, 1, "ZAZ account.no 10085-4",       { font: boldFont });
+  setCell(footerStart + 5, 1, "VAT No:CHE-133.248.441MWST");
+  setCell(footerStart + 6, 1, "UID no:CHE-133.248.441MWST");
+
+  if (invoice.isB2B) {
+    for (let i = 8; i <= 12; i++) ws.mergeCells(`A${footerStart + i}:K${footerStart + i}`);
+    setCell(footerStart + 8,  1, "Custom clearance agent:", { font: boldFont });
+    setCell(footerStart + 9,  1, "M+R Spedag Group AG");
+    setCell(footerStart + 10, 1, "Hirsrütiweg");
+    setCell(footerStart + 11, 1, "CH-4303 Kaiseraugst");
+    setCell(footerStart + 12, 1, "Switzerland");
+  }
 
   // ── Column widths ─────────────────────────────────────────────────────
   // Fixed widths tuned to content: Item col wide enough for longest names (~47 chars)
