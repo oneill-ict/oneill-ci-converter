@@ -94,7 +94,10 @@ function parseInvoiceText(text) {
   if (boxesM)    invoice.numberOfBoxes = boxesM[1].trim();
   if (weightM)   invoice.grossWeight   = weightM[1].trim();
 
-  const billingBlock = /Billing address\s+([\s\S]+?)O'Neill/i.exec(text);
+  // Stop at "Switzerland" — reliable end-of-address marker for CH invoices.
+  // Previously used "O'Neill" which broke B2C invoices where "O'Neill" appears
+  // as a recipient name on line 2 of the ship-to address.
+  const billingBlock = /Billing address\s+([\s\S]+?Switzerland)/i.exec(text);
   if (billingBlock) {
     const addrLines = billingBlock[1].trim().split(/\n/).map(l => l.trim()).filter(Boolean);
     invoice.billingName    = addrLines[0] || "";
@@ -324,12 +327,12 @@ async function buildExcel(invoice) {
   const tableCloseBorder = { bottom: { style: "medium", color: { argb: "FF1F4E79" } } };
 
   // ── Cell merges for document layout ──────────────────────────────────
-  // Shipper / Ship to two-column header block
+  // Shipper side always 4 rows; ship-to is dynamic (B2B=4 lines, B2C=5 lines
+  // because B2C has "O'Neill" as a recipient line inside the address).
+  const _shipToCount = Math.min((invoice.billingAddress || []).length + 1, 6);
   ws.mergeCells("A1:E1");  ws.mergeCells("F1:K1");
-  for (let i = 0; i < 4; i++) {
-    ws.mergeCells(`A${2+i}:E${2+i}`);
-    ws.mergeCells(`F${2+i}:K${2+i}`);
-  }
+  for (let i = 0; i < 4; i++) ws.mergeCells(`A${2+i}:E${2+i}`);
+  for (let i = 0; i < _shipToCount; i++) ws.mergeCells(`F${2+i}:K${2+i}`);
   ws.mergeCells("A6:E6");  ws.mergeCells("A7:E7");
   // Label : value rows — value cells span to col K (order nr can be very long)
   ws.mergeCells("A9:B9");   ws.mergeCells("C9:K9");
@@ -369,12 +372,11 @@ async function buildExcel(invoice) {
   setCell(1, 1, "Shipper",  { font: boldFont });
   setCell(1, 6, "Ship to",  { font: boldFont });
 
-  // Rows 2–7: Shipper = O'Neill (fixed) | Ship to = billing address from PDF (auto-filled)
+  // Rows 2–7: Shipper = O'Neill (fixed, 4 lines) | Ship to = billing address (dynamic)
   const shipperLines = ["O'Neill Europe B.V.", "Oosteinde 32", "2361 HE Warmond", "The Netherlands"];
   const shipToLines  = [invoice.billingName, ...(invoice.billingAddress || [])];
-  for (let i = 0; i < 4; i++) {
-    setCell(2 + i, 1, shipperLines[i] || "");
-    // Ship to: auto-filled from PDF billing address — no yellow, already correct
+  for (let i = 0; i < 4; i++) setCell(2 + i, 1, shipperLines[i] || "");
+  for (let i = 0; i < Math.min(shipToLines.length, 6); i++) {
     if (shipToLines[i]) setCell(2 + i, 6, shipToLines[i]);
   }
   setCell(6, 1, "VAT number: NL006028317B01");
