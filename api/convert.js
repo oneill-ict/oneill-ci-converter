@@ -130,15 +130,15 @@ function parseInvoiceText(text) {
   });
   const itemsStart = flatText.indexOf("DiscountTotal");
 
-  // The PDF may contain intermediate "Goods total" subtotals per page/category.
-  // Use the LAST occurrence so we capture all items across all pages.
-  const flatLower  = flatText.toLowerCase();
-  const itemsEnd   = flatLower.lastIndexOf("goods total");
-  const itemsText  = itemsStart >= 0 && itemsEnd > itemsStart
-    ? flatText.slice(itemsStart, itemsEnd)
-    : flatText;
+  // Parse from the column-header line all the way to the end of the document.
+  // We intentionally do NOT stop at "Goods total" because some PDFs (e.g. with a
+  // separate NOS section) list additional items AFTER the running subtotal line.
+  // False blocks (tariff summary, footer text) are safely rejected downstream
+  // because they have no CHF triplet or no tariff+weight pattern.
+  const itemsText = itemsStart >= 0 ? flatText.slice(itemsStart) : flatText;
 
-  // Expected totals — read from the LAST "Goods total N CHF" line (the grand total)
+  // Expected totals — read from the LAST "Goods total N CHF" line (the grand total).
+  // Scan the full flatText so intermediate per-page subtotals don't shadow the real total.
   let lastGtM = null;
   for (const m of flatText.matchAll(/Goods total\s*(\d+)\s+([\d.,]+)\s*CHF/gi)) {
     lastGtM = m;
@@ -298,8 +298,8 @@ async function buildExcel(invoice) {
   wb.creator = "O'Neill CI Converter";
   const ws = wb.addWorksheet("Commercial Invoice");
 
-  // Freeze header block + column label row; hide gridlines for clean document look
-  ws.views = [{ state: "frozen", ySplit: 18, activeCell: "A19", showGridLines: false }];
+  // No freeze pane — hide gridlines only for clean document look
+  ws.views = [{ showGridLines: false }];
 
   const hFont    = { name: "Arial", size: 10 };
   const boldFont = { name: "Arial", size: 10, bold: true };
@@ -685,12 +685,13 @@ export default async function handler(req, res) {
   // When force=true the client explicitly wants the Excel anyway (e.g. after warning).
   if (v && !v.valid && !force) {
     return res.status(422).json({
-      error:         "Validatie mislukt na herstel",
-      parsedQty:     v.parsedQty,
-      expectedQty:   v.expectedQty,
-      parsedTotal:   v.parsedTotal,
-      expectedTotal: v.expectedTotal,
-      missedRows:    v.missedRows,
+      error:            "Validatie mislukt na herstel",
+      parsedQty:        v.parsedQty,
+      expectedQty:      v.expectedQty,
+      parsedTotal:      v.parsedTotal,
+      expectedTotal:    v.expectedTotal,
+      missedRows:       v.missedRows,
+      unparsedItemNos:  v.unparsedItemNos,
     });
   }
 
