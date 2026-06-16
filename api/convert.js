@@ -94,10 +94,15 @@ function parseInvoiceText(text) {
   if (boxesM)    invoice.numberOfBoxes = boxesM[1].trim();
   if (weightM)   invoice.grossWeight   = weightM[1].trim();
 
-  // Stop at "Switzerland" — reliable end-of-address marker for CH invoices.
-  // Previously used "O'Neill" which broke B2C invoices where "O'Neill" appears
-  // as a recipient name on line 2 of the ship-to address.
-  const billingBlock = /Billing address\s+([\s\S]+?Switzerland)/i.exec(text);
+  // Detect invoice currency (CHF for Switzerland, EUR for other countries)
+  const currencyM = /\b(CHF|EUR)\b/.exec(text);
+  invoice.currency = currencyM ? currencyM[1] : "CHF";
+
+  // Stop at "O'Neill Europe B.V." — the shipper block always follows the billing
+  // address, regardless of destination country (CH, MT, etc.).
+  // Previously used "Switzerland" which broke non-CH invoices (e.g. Malta/EUR),
+  // and before that "O'Neill" which broke B2C invoices where the recipient is O'Neill.
+  const billingBlock = /Billing address\s+([\s\S]+?)O'Neill Europe B\.V\./i.exec(text);
   if (billingBlock) {
     const addrLines = billingBlock[1].trim().split(/\n/).map(l => l.trim()).filter(Boolean);
     invoice.billingName    = addrLines[0] || "";
@@ -137,10 +142,10 @@ function parseInvoiceText(text) {
   // because they have no CHF triplet or no tariff+weight pattern.
   const itemsText = itemsStart >= 0 ? flatText.slice(itemsStart) : flatText;
 
-  // Expected totals — read from the LAST "Goods total N CHF" line (the grand total).
+  // Expected totals — read from the LAST "Goods total N CHF/EUR" line (the grand total).
   // Scan the full flatText so intermediate per-page subtotals don't shadow the real total.
   let lastGtM = null;
-  for (const m of flatText.matchAll(/Goods total\s*(\d+)\s+([\d.,]+)\s*CHF/gi)) {
+  for (const m of flatText.matchAll(/Goods total\s*(\d+)\s+([\d.,]+)\s*(?:CHF|EUR)/gi)) {
     lastGtM = m;
   }
   const expectedQty   = lastGtM ? parseInt(lastGtM[1], 10) : null;
@@ -150,16 +155,15 @@ function parseInvoiceText(text) {
   // Split on item-number boundaries.
   // Rule: a 7-digit sequence is an item number if NOT followed by 3+ more digits
   // (which would make it part of a 10-digit HS tariff code).
-  // This handles items whose names start with digits, e.g. "2100049" + "75 YEARS TOWEL"
-  // appears as "210004975" in the PDF — we split at position 7 because only 2 digits follow.
-  const splitRe = /(?<!\d)(?=(?:\d{7}(?!\d{3})|N\d{5}(?!\d)))/g;
+  // N-prefixed items can be N+5 (e.g. N03202) or N+7 (e.g. N2450006, N3800001).
+  const splitRe = /(?<!\d)(?=(?:\d{7}(?!\d{3})|N\d{5,7}(?!\d)))/g;
   const blocks  = itemsText.split(splitRe).filter(b => b.trim());
 
   // ── STEP 2 — Parse each block independently ───────────────────────────────
   const missedRows = [];
   for (const block of blocks) {
     // Item number must appear (near the start of the block)
-    const itemNoM = /(?<!\d)(\d{7}(?!\d{3})|N\d{5}(?!\d))/.exec(block);
+    const itemNoM = /(?<!\d)(\d{7}(?!\d{3})|N\d{5,7}(?!\d))/.exec(block);
     if (!itemNoM) {
       // Log blocks that have no item number so we can diagnose gaps
       missedRows.push({ itemNo: "???", reason: "no item number in block", context: block.slice(0, 150).replace(/\s+/g, " ") });
@@ -168,8 +172,8 @@ function parseInvoiceText(text) {
     const itemNo    = itemNoM[1];
     const itemNoEnd = itemNoM.index + itemNo.length;
 
-    // Collect all "number CHF" occurrences; last 3 are: combined, discount, total
-    const chfAll = [...block.matchAll(/([\d., ]+?)\s*CHF/g)];
+    // Collect all "number CHF/EUR" occurrences; last 3 are: combined, discount, total
+    const chfAll = [...block.matchAll(/([\d., ]+?)\s*(?:CHF|EUR)/g)];
     if (chfAll.length < 3) {
       missedRows.push({ itemNo, reason: `${chfAll.length} CHF values`, context: block.slice(0, 200).replace(/\s+/g, " ") });
       continue;
@@ -260,7 +264,7 @@ function parseInvoiceText(text) {
   // Find item numbers present in itemsText but absent from parsed results — diagnostic
   const parsedItemNos = new Set(invoice.items.map(i => i.itemNo));
   const unparsedItemNos = [];
-  for (const c of itemsText.matchAll(/(?<!\d)(\d{7}(?!\d{3})|N\d{5}(?!\d))/g)) {
+  for (const c of itemsText.matchAll(/(?<!\d)(\d{7}(?!\d{3})|N\d{5,7}(?!\d))/g)) {
     if (!parsedItemNos.has(c[1])) {
       const pos = c.index;
       unparsedItemNos.push({
@@ -417,9 +421,10 @@ async function buildExcel(invoice) {
 
   // ── Column headers (row 18) — light blue fill ─────────────────────────
 
+  const cur = invoice.currency || "CHF";
   const headers = [
     "Item No.", "Item", "Colour", "Colour no.", "Country of origin",
-    "Tariff No.", "Nett weight", "Quantity", "Price per piece (CHF)", "Discount (CHF)", "Total (CHF)",
+    "Tariff No.", "Nett weight", "Quantity", `Price per piece (${cur})`, `Discount (${cur})`, `Total (${cur})`,
   ];
 
   ws.getRow(18).height = 22;
@@ -579,35 +584,38 @@ async function buildExcel(invoice) {
   });
 
   // ── Legal / customs footer ────────────────────────────────────────────────
-  // Turkish-origin declaration + VAT/UID on every invoice;
-  // custom clearance agent block only on B2B invoices (auto-detected above).
+  // Swiss-specific footer (Turkish origin + ZAZ + VAT/UID + optional B2B agent)
+  // only applies to CHF invoices destined for Switzerland.
   const footerStart = tariffSectionStart + uniqueTariffs.length + 3;
+  const isSwiss = (invoice.currency || "CHF") === "CHF";
 
-  // Merge footer text rows full-width so long text wraps correctly
-  ws.mergeCells(`A${footerStart}:K${footerStart}`);
-  ws.mergeCells(`A${footerStart + 1}:K${footerStart + 1}`);
-  ws.mergeCells(`A${footerStart + 3}:K${footerStart + 3}`);
-  ws.mergeCells(`A${footerStart + 5}:K${footerStart + 5}`);
-  ws.mergeCells(`A${footerStart + 6}:K${footerStart + 6}`);
+  if (isSwiss) {
+    // Merge footer text rows full-width so long text wraps correctly
+    ws.mergeCells(`A${footerStart}:K${footerStart}`);
+    ws.mergeCells(`A${footerStart + 1}:K${footerStart + 1}`);
+    ws.mergeCells(`A${footerStart + 3}:K${footerStart + 3}`);
+    ws.mergeCells(`A${footerStart + 5}:K${footerStart + 5}`);
+    ws.mergeCells(`A${footerStart + 6}:K${footerStart + 6}`);
 
-  setCell(footerStart, 1, "Bei Waren türkischen Ursprungs:", { font: boldFont });
-  setCell(footerStart + 1, 1,
-    "Der Ausführer der Waren, auf die sich diese Handelspapiere beziehen, erklärt, dass diese Waren, soweit nicht anders angegeben, präferenzbegünstigte Türkische Ursprungswaren sind.",
-    { font: hFont, alignment: { wrapText: true, vertical: "top" } }
-  );
-  ws.getRow(footerStart + 1).height = 36;
+    setCell(footerStart, 1, "Bei Waren türkischen Ursprungs:", { font: boldFont });
+    setCell(footerStart + 1, 1,
+      "Der Ausführer der Waren, auf die sich diese Handelspapiere beziehen, erklärt, dass diese Waren, soweit nicht anders angegeben, präferenzbegünstigte Türkische Ursprungswaren sind.",
+      { font: hFont, alignment: { wrapText: true, vertical: "top" } }
+    );
+    ws.getRow(footerStart + 1).height = 36;
 
-  setCell(footerStart + 3, 1, "ZAZ account.no 10085-4",       { font: boldFont });
-  setCell(footerStart + 5, 1, "VAT No:CHE-133.248.441MWST");
-  setCell(footerStart + 6, 1, "UID no:CHE-133.248.441MWST");
+    setCell(footerStart + 3, 1, "ZAZ account.no 10085-4",       { font: boldFont });
+    setCell(footerStart + 5, 1, "VAT No:CHE-133.248.441MWST");
+    setCell(footerStart + 6, 1, "UID no:CHE-133.248.441MWST");
 
-  if (invoice.isB2B) {
-    for (let i = 8; i <= 12; i++) ws.mergeCells(`A${footerStart + i}:K${footerStart + i}`);
-    setCell(footerStart + 8,  1, "Custom clearance agent:", { font: boldFont });
-    setCell(footerStart + 9,  1, "M+R Spedag Group AG");
-    setCell(footerStart + 10, 1, "Hirsrütiweg");
-    setCell(footerStart + 11, 1, "CH-4303 Kaiseraugst");
-    setCell(footerStart + 12, 1, "Switzerland");
+    if (invoice.isB2B) {
+      for (let i = 8; i <= 12; i++) ws.mergeCells(`A${footerStart + i}:K${footerStart + i}`);
+      setCell(footerStart + 8,  1, "Custom clearance agent:", { font: boldFont });
+      setCell(footerStart + 9,  1, "M+R Spedag Group AG");
+      setCell(footerStart + 10, 1, "Hirsrütiweg");
+      setCell(footerStart + 11, 1, "CH-4303 Kaiseraugst");
+      setCell(footerStart + 12, 1, "Switzerland");
+    }
   }
 
   // ── Column widths ─────────────────────────────────────────────────────
