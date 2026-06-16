@@ -95,7 +95,7 @@ function parseInvoiceText(text) {
   if (weightM)   invoice.grossWeight   = weightM[1].trim();
 
   // Detect invoice currency (CHF for Switzerland, EUR for other countries)
-  const currencyM = /\b(CHF|EUR)\b/.exec(text);
+  const currencyM = /\b(CHF|EUR|GBP)\b/.exec(text);
   invoice.currency = currencyM ? currencyM[1] : "CHF";
 
   // Stop at "O'Neill Europe B.V." — the shipper block always follows the billing
@@ -145,7 +145,7 @@ function parseInvoiceText(text) {
   // Expected totals — read from the LAST "Goods total N CHF/EUR" line (the grand total).
   // Scan the full flatText so intermediate per-page subtotals don't shadow the real total.
   let lastGtM = null;
-  for (const m of flatText.matchAll(/Goods total\s*(\d+)\s+([\d.,]+)\s*(?:CHF|EUR)/gi)) {
+  for (const m of flatText.matchAll(/Goods total\s*(\d+)\s+([\d.,]+)\s*(?:CHF|EUR|GBP)/gi)) {
     lastGtM = m;
   }
   const expectedQty   = lastGtM ? parseInt(lastGtM[1], 10) : null;
@@ -173,7 +173,7 @@ function parseInvoiceText(text) {
     const itemNoEnd = itemNoM.index + itemNo.length;
 
     // Collect all "number CHF/EUR" occurrences; last 3 are: combined, discount, total
-    const chfAll = [...block.matchAll(/([\d., ]+?)\s*(?:CHF|EUR)/g)];
+    const chfAll = [...block.matchAll(/([\d., ]+?)\s*(?:CHF|EUR|GBP)/g)];
     if (chfAll.length < 3) {
       missedRows.push({ itemNo, reason: `${chfAll.length} CHF values`, context: block.slice(0, 200).replace(/\s+/g, " ") });
       continue;
