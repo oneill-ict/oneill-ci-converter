@@ -67,11 +67,15 @@ function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
 }
 
 function extractCountry(groupCountry) {
-  // e.g. "BlousesIndia" or "Dresses & JumpsuitsBangladesh" or "FootwearChina"
-  // Country starts where a lowercase letter is followed by an uppercase letter
-  const idx = groupCountry.search(/(?<=[a-z])(?=[A-Z])/);
-  if (idx > 0) return groupCountry.slice(idx).trim();
-  return groupCountry.trim();
+  const trimmed = groupCountry.trim();
+  // Case 1: item group concatenated directly to country (e.g. "FootwearChina",
+  // "BlousesIndia") — split at lowercase→uppercase boundary.
+  const idx = trimmed.search(/(?<=[a-z])(?=[A-Z])/);
+  if (idx > 0) return trimmed.slice(idx).trim();
+  // Case 2: multi-word item group separated by spaces (e.g. "Dresses & Jumpsuits India",
+  // "Tops & Blouses Bangladesh") — country is always the last word.
+  const words = trimmed.split(/\s+/);
+  return words[words.length - 1] || trimmed;
 }
 
 function parseInvoiceText(text) {
