@@ -693,12 +693,32 @@ export default async function handler(req, res) {
   const invoice = parseInvoiceText(pdfData.text);
 
   if (invoice.items.length === 0) {
+    console.log(JSON.stringify({ event: "ci_no_items", filename: filename || null, currency: invoice.currency }));
     return res.status(422).json({
       error: "Geen factuurregels gevonden. Controleer of dit een O'Neill Commercial Invoice is.",
     });
   }
 
   const v = invoice._validation;
+
+  // Structured log for every conversion — visible in Vercel function logs.
+  // Fires regardless of outcome so we can spot patterns without waiting for user reports.
+  console.log(JSON.stringify({
+    event:          "ci_conversion",
+    filename:       filename || null,
+    currency:       invoice.currency,
+    itemsFound:     invoice.items.length,
+    parsedQty:      v?.parsedQty    ?? null,
+    parsedTotal:    v?.parsedTotal  ?? null,
+    expectedQty:    v?.expectedQty  ?? null,
+    expectedTotal:  v?.expectedTotal ?? null,
+    valid:          v?.valid         ?? null,
+    missedCount:    (v?.missedRows || []).length,
+    missed:         (v?.missedRows || []).map(r => ({ itemNo: r.itemNo, reason: r.reason })).slice(0, 10),
+    unparsedCount:  (v?.unparsedItemNos || []).length,
+    unparsed:       (v?.unparsedItemNos || []).map(r => r.itemNo),
+  }));
+
   // Validation mismatch: return structured error so frontend can show a readable message.
   // When force=true the client explicitly wants the Excel anyway (e.g. after warning).
   if (v && !v.valid && !force) {
@@ -736,6 +756,11 @@ export default async function handler(req, res) {
   // Expose validation stats so the frontend can show a summary
   res.setHeader("X-Validation-Qty",   String(invoice._validation?.parsedQty   ?? ""));
   res.setHeader("X-Validation-Total", String(invoice._validation?.parsedTotal ?? ""));
+  // Expose unparsed item numbers even on success so the frontend can show a soft warning
+  const unparsedNos = (v?.unparsedItemNos || []).map(r => r.itemNo);
+  if (unparsedNos.length > 0) {
+    res.setHeader("X-Unparsed-Items", JSON.stringify(unparsedNos));
+  }
   // First-10-rows preview so the frontend can show a table before confirming download
   const previewRows = invoice.items.slice(0, 10).map(it => ({
     n: it.itemNo,

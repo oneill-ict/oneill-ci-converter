@@ -48,6 +48,7 @@ const i18n = {
     footer:        "PDF → XLSX · Geen login vereist · Geen data opgeslagen",
     download:      "Download",
     anyway:        "Toch",
+    silentGapNote: (n) => `Let op: ${n} itemnummer(s) uit de PDF zijn niet in de export opgenomen —`,
   },
   EN: {
     title:         "Commercial Invoice Converter",
@@ -92,6 +93,7 @@ const i18n = {
     footer:        "PDF → XLSX · No login required · No data stored",
     download:      "Download",
     anyway:        "Anyway",
+    silentGapNote: (n) => `Note: ${n} item number(s) from the PDF were not included in the export —`,
   },
 };
 
@@ -138,23 +140,26 @@ async function convertFile(file, force = false) {
     // Validation mismatch: expose structured data for the friendly warning UI
     if (res.status === 422 && err.parsedQty != null) {
       const e = new Error("validation_mismatch");
-      e.isPartial    = true;
-      e.parsedQty    = err.parsedQty;
-      e.expectedQty  = err.expectedQty;
-      e.parsedTotal  = err.parsedTotal;
-      e.expectedTotal = err.expectedTotal;
-      e.missedRows   = err.missedRows || [];
+      e.isPartial        = true;
+      e.parsedQty        = err.parsedQty;
+      e.expectedQty      = err.expectedQty;
+      e.parsedTotal      = err.parsedTotal;
+      e.expectedTotal    = err.expectedTotal;
+      e.missedRows       = err.missedRows       || [];
+      e.unparsedItemNos  = err.unparsedItemNos  || [];
       throw e;
     }
     throw new Error(err.error || `HTTP ${res.status}`);
   }
 
-  const qty        = parseInt(res.headers.get("X-Validation-Qty")   || "0", 10);
-  const total      = parseFloat(res.headers.get("X-Validation-Total") || "0");
-  const previewRaw = res.headers.get("X-Preview");
-  const preview    = previewRaw ? JSON.parse(previewRaw) : [];
-  const blob       = await res.blob();
-  return { blob, qty, total, preview };
+  const qty              = parseInt(res.headers.get("X-Validation-Qty")    || "0", 10);
+  const total            = parseFloat(res.headers.get("X-Validation-Total") || "0");
+  const previewRaw       = res.headers.get("X-Preview");
+  const preview          = previewRaw ? JSON.parse(previewRaw) : [];
+  const unparsedRaw      = res.headers.get("X-Unparsed-Items");
+  const unparsedItemNos  = unparsedRaw ? JSON.parse(unparsedRaw) : [];
+  const blob             = await res.blob();
+  return { blob, qty, total, preview, unparsedItemNos };
 }
 
 // ── App ─────────────────────────────────────────────────────────────────────
@@ -198,10 +203,10 @@ export default function App() {
       const xlsxName = file.name.replace(/\.[^.]+$/, "") + ".xlsx";
 
       try {
-        const { blob, qty, total, preview } = await convertFile(file);
+        const { blob, qty, total, preview, unparsedItemNos } = await convertFile(file);
         // Single file: trigger immediate download
         if (pdfs.length === 1) triggerDownload(blob, xlsxName);
-        batch.push({ name: file.name, xlsxName, blob, qty, total, preview, error: null, isPartial: false, file });
+        batch.push({ name: file.name, xlsxName, blob, qty, total, preview, unparsedItemNos: unparsedItemNos || [], error: null, isPartial: false, file });
       } catch (e) {
         if (e.isPartial) {
           // Validation mismatch — auto-download the export anyway so the team can continue,
@@ -218,6 +223,7 @@ export default function App() {
             qty: e.parsedQty, total: e.parsedTotal,
             expectedQty: e.expectedQty, expectedTotal: e.expectedTotal,
             missedRows: e.missedRows || [],
+            unparsedItemNos: e.unparsedItemNos || [],
             preview: autoPreview, error: null, isPartial: true, file,
           });
         } else {
@@ -539,7 +545,12 @@ function ValidationBadge({ qty, total, t }) {
 }
 
 function PartialWarning({ result, onForceDownload, t }) {
-  const named = (result.missedRows || []).filter(r => r.itemNo !== "???");
+  // Prefer unparsedItemNos (actual item numbers from PDF text that didn't make it to output)
+  // over missedRows (lower-level block failures that may include "???" placeholders).
+  const unparsed = result.unparsedItemNos || [];
+  const named    = unparsed.length > 0
+    ? unparsed
+    : (result.missedRows || []).filter(r => r.itemNo !== "???").map(r => r.itemNo);
   return (
     <div style={{
       background: "#1a1200", border: `1px solid #b86e00`, borderRadius: 10,
@@ -550,12 +561,12 @@ function PartialWarning({ result, onForceDownload, t }) {
         <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#f59e0b" }}>{t.mismatchTitle}</span>
       </div>
       <p style={{ fontSize: "0.78rem", color: T.textDim, lineHeight: 1.5 }}>
-        {t.mismatchFound} <strong style={{ color: T.text }}>{result.qty} {t.rows} · CHF {fmtCHF(result.total)}</strong><br />
-        {t.mismatchExp} <strong style={{ color: T.text }}>{result.expectedQty} {t.rows} · CHF {fmtCHF(result.expectedTotal)}</strong>
+        {t.mismatchFound} <strong style={{ color: T.text }}>{result.qty} {t.rows} · {fmtCHF(result.total)}</strong><br />
+        {t.mismatchExp} <strong style={{ color: T.text }}>{result.expectedQty} {t.rows} · {fmtCHF(result.expectedTotal)}</strong>
       </p>
       {named.length > 0 && (
         <p style={{ fontSize: "0.72rem", color: T.textDim, marginTop: "0.35rem", fontFamily: "JetBrains Mono, monospace" }}>
-          {t.missedItemsLabel}: {named.map(r => r.itemNo).join(", ")}
+          {t.missedItemsLabel}: {named.join(", ")}
         </p>
       )}
       <button type="button" onClick={onForceDownload} disabled={result.forceLoading} style={{
@@ -569,6 +580,23 @@ function PartialWarning({ result, onForceDownload, t }) {
         {result.forceLoading ? <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} /> : <FileDown size={13} />}
         {result.blob ? t.redownload : t.downloadAnyway}
       </button>
+    </div>
+  );
+}
+
+function SilentGapWarning({ unparsedItemNos, t }) {
+  if (!unparsedItemNos || unparsedItemNos.length === 0) return null;
+  return (
+    <div style={{
+      background: T.panelDeep, border: `1px solid #5a4400`, borderRadius: 8,
+      padding: "0.6rem 0.85rem", marginBottom: "0.75rem",
+      display: "flex", alignItems: "flex-start", gap: "0.5rem",
+    }}>
+      <AlertTriangle size={13} color="#c78c00" style={{ marginTop: 2, flexShrink: 0 }} />
+      <p style={{ fontSize: "0.72rem", color: T.textDim, lineHeight: 1.5, margin: 0 }}>
+        {t.silentGapNote(unparsedItemNos.length)}{" "}
+        <span style={{ fontFamily: "JetBrains Mono, monospace", color: T.textMute }}>{unparsedItemNos.join(", ")}</span>
+      </p>
     </div>
   );
 }
@@ -614,6 +642,7 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
             }}>
               <FileDown size={13} /> {t.redownload}
             </button>
+            <SilentGapWarning unparsedItemNos={result.unparsedItemNos} t={t} />
           </>
         )}
 
