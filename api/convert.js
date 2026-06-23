@@ -139,12 +139,18 @@ function parseInvoiceText(text) {
   });
   const itemsStart = flatText.indexOf("DiscountTotal");
 
-  // Parse from the column-header line all the way to the end of the document.
-  // We intentionally do NOT stop at "Goods total" because some PDFs (e.g. with a
-  // separate NOS section) list additional items AFTER the running subtotal line.
-  // False blocks (tariff summary, footer text) are safely rejected downstream
-  // because they have no CHF triplet or no tariff+weight pattern.
-  const itemsText = itemsStart >= 0 ? flatText.slice(itemsStart) : flatText;
+  // Determine where the items section ends.
+  // Primary: "SUBTOTAL TARIFF NO." — the tariff breakdown header always follows
+  //   all items (including NOS items that appear after a per-page "Goods total"
+  //   subtotal). This is safer than stopping at "Goods total" which can appear
+  //   in the middle of the document as a running page subtotal.
+  // Fallback: last "goods total" occurrence — for invoices without tariff subtotals.
+  const flatLower  = flatText.toLowerCase();
+  let itemsEnd     = flatLower.indexOf("subtotal tariff no.");
+  if (itemsEnd < 0) itemsEnd = flatLower.lastIndexOf("goods total");
+  const itemsText  = itemsStart >= 0 && itemsEnd > itemsStart
+    ? flatText.slice(itemsStart, itemsEnd)
+    : itemsStart >= 0 ? flatText.slice(itemsStart) : flatText;
 
   // Expected totals — read from the LAST "Goods total N CHF/EUR" line (the grand total).
   // Scan the full flatText so intermediate per-page subtotals don't shadow the real total.
@@ -286,9 +292,9 @@ function parseInvoiceText(text) {
   };
 
   // Invoice-level discount and VAT
-  const invDiscM = /Discount\s+([\d.,]+)\s*CHF/i.exec(text);
+  const invDiscM = /Discount\s+([\d.,]+)\s*(?:CHF|EUR|GBP)/i.exec(text);
   if (invDiscM) invoice.invoiceDiscount = parseEuropeanNumber(invDiscM[1]);
-  const vatM = /VAT\s+([\d.,]+)\s*CHF/i.exec(text);
+  const vatM = /VAT\s+([\d.,]+)\s*(?:CHF|EUR|GBP)/i.exec(text);
   if (vatM) invoice.vat = parseEuropeanNumber(vatM[1]);
 
   return invoice;
