@@ -547,7 +547,8 @@ function ValidationBadge({ qty, total, t }) {
 function PartialWarning({ result, onForceDownload, t }) {
   // Prefer unparsedItemNos (actual item numbers from PDF text that didn't make it to output)
   // over missedRows (lower-level block failures that may include "???" placeholders).
-  const unparsed = result.unparsedItemNos || [];
+  // unparsedItemNos from the 422 response are objects { itemNo, context } — extract the string.
+  const unparsed = (result.unparsedItemNos || []).map(r => typeof r === "string" ? r : r.itemNo);
   const named    = unparsed.length > 0
     ? unparsed
     : (result.missedRows || []).filter(r => r.itemNo !== "???").map(r => r.itemNo);

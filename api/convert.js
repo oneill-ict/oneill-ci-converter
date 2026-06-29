@@ -163,46 +163,54 @@ function parseInvoiceText(text) {
 
   // ── STEP 1 — Split text into per-item blocks ─────────────────────────────
   // Split on item-number boundaries.
-  // Rule: a 7-digit sequence is an item number if NOT followed by 3+ more digits
-  // (which would make it part of a 10-digit HS tariff code).
-  // N-prefixed items can be N+5 (e.g. N03202) or N+7 (e.g. N2450006, N3800001).
-  const splitRe = /(?<!\d)(?=(?:\d{7}(?!\d{3})|N\d{5,7}(?!\d)))/g;
+  // \d{7,8}: covers standard 7-digit items AND 8-digit items (e.g. 90261039).
+  // (?<![\dN]): prevents splitting at the digit portion of N-prefixed items
+  //   (e.g. N1800006 must not create a separate split at its embedded 1800006).
+  // N\d{5,7}: N-prefixed items (N+5 to N+7 digits).
+  // (?<=CHF/EUR/GBP )\d{4}[A-Z]: alphanumeric items (e.g. 4868G, 5045B) that appear
+  //   immediately after a CHF/EUR/GBP total line (collapsed newline becomes space).
+  const splitRe = /(?<![\dN])(?=\d{7,8}(?!\d))|(?<!\d)(?=N\d{5,7}(?!\d))|(?<=(?:CHF|EUR|GBP) )(?=\d{4}[A-Z])/g;
   const blocks  = itemsText.split(splitRe).filter(b => b.trim());
 
   // ── STEP 2 — Parse each block independently ───────────────────────────────
   const missedRows = [];
   for (const block of blocks) {
-    // Item number must appear (near the start of the block)
-    const itemNoM = /(?<!\d)(\d{7}(?!\d{3})|N\d{5,7}(?!\d))/.exec(block);
+    // Item number: 7-8 digit, N+5..7 digit, or alphanumeric at block start (e.g. 4868G).
+    const itemNoM = /(?<![\dN])(\d{7,8})(?!\d)|(?<!\d)(N\d{5,7})(?!\d)|^(\d{4}[A-Z])/.exec(block);
     if (!itemNoM) {
-      // Log blocks that have no item number so we can diagnose gaps
       missedRows.push({ itemNo: "???", reason: "no item number in block", context: block.slice(0, 150).replace(/\s+/g, " ") });
       continue;
     }
-    const itemNo    = itemNoM[1];
-    const itemNoEnd = itemNoM.index + itemNo.length;
-
-    // Collect all "number CHF/EUR" occurrences; last 3 are: combined, discount, total
-    const chfAll = [...block.matchAll(/([\d., ]+?)\s*(?:CHF|EUR|GBP)/g)];
-    if (chfAll.length < 3) {
-      missedRows.push({ itemNo, reason: `${chfAll.length} CHF values`, context: block.slice(0, 200).replace(/\s+/g, " ") });
-      continue;
-    }
-    const last3       = chfAll.slice(-3);
-    const combined    = last3[0][1].trim();
-    const lineDiscount = parseEuropeanNumber(last3[1][1].trim());
-    const lineTotal    = parseEuropeanNumber(last3[2][1].trim());
+    const itemNo    = itemNoM[1] || itemNoM[2] || itemNoM[3];
+    const itemNoEnd = itemNoM.index + itemNoM[0].length;
 
     // Tariff number (10 digits) immediately followed by gross weight digits + "gr"
-    // e.g. "6206300090240,00 gr" — no space between tariff and weight in PDF output
+    // e.g. "6206300090240,00 gr" — no space between tariff and weight in PDF output.
+    // Finding tariff FIRST so we can read CHF values after it, ignoring any footer
+    // amounts (Goods total, VAT, Total) that may appear later in the same block.
     const tariffGrM = /(\d{10})(\d[\d.]*,\d+)\s*gr/.exec(block);
     if (!tariffGrM) {
       missedRows.push({ itemNo, reason: "no tariff+gr", context: block.slice(0, 200).replace(/\s+/g, " ") });
       continue;
     }
-    const tariffNo  = tariffGrM[1];
-    const tariffPos = tariffGrM.index;
+    const tariffNo    = tariffGrM[1];
+    const tariffPos   = tariffGrM.index;
     const grossWeight = parseEuropeanNumber(tariffGrM[2]);
+
+    // CHF values immediately after the tariff: combined (qty×price), discount, total.
+    // Using first-3-after-tariff instead of last-3-in-block prevents the last item's
+    // block from picking up footer CHF amounts (Goods total, Subtotal, VAT, Total)
+    // that appear between the last item and SUBTOTAL TARIFF NO.
+    const afterTariffText = block.slice(tariffPos + tariffGrM[0].length);
+    const chfAfterTariff  = [...afterTariffText.matchAll(/([\d., ]+?)\s*(?:CHF|EUR|GBP)/g)];
+    if (chfAfterTariff.length < 3) {
+      missedRows.push({ itemNo, reason: `${chfAfterTariff.length} CHF values after tariff`, context: block.slice(0, 200).replace(/\s+/g, " ") });
+      continue;
+    }
+    const first3       = chfAfterTariff.slice(0, 3);
+    const combined     = first3[0][1].trim();
+    const lineDiscount = parseEuropeanNumber(first3[1][1].trim());
+    const lineTotal    = parseEuropeanNumber(first3[2][1].trim());
 
     // Text between itemNo and tariff number contains: item name, colour, colourNo, category/country
     const midText = block.slice(itemNoEnd, tariffPos);
@@ -274,11 +282,12 @@ function parseInvoiceText(text) {
   // Find item numbers present in itemsText but absent from parsed results — diagnostic
   const parsedItemNos = new Set(invoice.items.map(i => i.itemNo));
   const unparsedItemNos = [];
-  for (const c of itemsText.matchAll(/(?<!\d)(\d{7}(?!\d{3})|N\d{5,7}(?!\d))/g)) {
-    if (!parsedItemNos.has(c[1])) {
+  for (const c of itemsText.matchAll(/(?<![\dN])(\d{7,8})(?!\d)|(?<!\d)(N\d{5,7})(?!\d)/g)) {
+    const itemNum = c[1] || c[2];
+    if (!parsedItemNos.has(itemNum)) {
       const pos = c.index;
       unparsedItemNos.push({
-        itemNo: c[1],
+        itemNo: itemNum,
         context: itemsText.slice(Math.max(0, pos - 10), pos + 120).replace(/\s+/g, " "),
       });
     }
