@@ -24,30 +24,45 @@ const round2 = (n) => Math.round(n * 100) / 100;
 
 function parseQtyPrice(combined, totalCHF, discountCHF = 0) {
   // combined = qty+price, possibly with spaces ("3 30,39") or thousands-sep periods ("11.200,00")
+  // Two discount formats exist across invoice types:
+  //   Format A (line discount):    total = qty × price - disc_total   → qty×price ≈ total+disc
+  //   Format B (per-unit discount): total = qty × (price - disc_unit) → total/qty ≈ price-disc
   const s        = combined.trim();
   const commaIdx = s.indexOf(",");
-  if (commaIdx < 0) return { qty: parseInt(s, 10), price: 0 };
+  if (commaIdx < 0) return { qty: parseInt(s, 10), price: 0, discMult: 1 };
   const intPart      = s.slice(0, commaIdx);
   const decPart      = s.slice(commaIdx + 1).trim();
   const expectedProd = round2(totalCHF + discountCHF);
 
+  // Pass 1 — line-discount format (standard CH invoices)
   for (let qLen = 1; qLen < intPart.length; qLen++) {
     const priceIntRaw = intPart.slice(qLen);
-    // Strip thousands-separator periods and leading spaces
     const priceInt = priceIntRaw.replace(/\./g, "").trim();
     if (!priceInt || priceInt[0] === "0") continue;
     const qty   = parseInt(intPart.slice(0, qLen), 10);
     const price = parseFloat(`${priceInt}.${decPart}`);
     if (isNaN(qty) || isNaN(price)) continue;
-    if (Math.abs(round2(qty * price) - expectedProd) < 0.02) return { qty, price };
+    if (Math.abs(round2(qty * price) - expectedProd) < 0.02) return { qty, price, discMult: 1 };
   }
-  return { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`) };
+
+  // Pass 2 — per-unit discount format (e.g. Bens Surf Clinic / distributor invoices)
+  // Uses per-piece tolerance to absorb rounding in the per-unit discount value.
+  for (let qLen = 1; qLen < intPart.length; qLen++) {
+    const priceInt = intPart.slice(qLen).replace(/\./g, "").trim();
+    if (!priceInt || priceInt[0] === "0") continue;
+    const qty   = parseInt(intPart.slice(0, qLen), 10);
+    const price = parseFloat(`${priceInt}.${decPart}`);
+    if (isNaN(qty) || isNaN(price) || qty === 0) continue;
+    if (Math.abs(totalCHF / qty - (price - discountCHF)) < 0.02) return { qty, price, discMult: qty };
+  }
+
+  return { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`), discMult: 1 };
 }
 
 function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
   const s        = combined.trim();
   const commaIdx = s.indexOf(",");
-  if (commaIdx < 0) return { qty: parseInt(s, 10), price: 0 };
+  if (commaIdx < 0) return { qty: parseInt(s, 10), price: 0, discMult: 1 };
   const intPart  = s.slice(0, commaIdx);
   const decPart  = s.slice(commaIdx + 1).trim();
   const target   = round2(totalCHF + discountCHF);
@@ -59,11 +74,15 @@ function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
     if (!priceInt || priceInt[0] === "0") continue;
     const qty   = parseInt(intPart.slice(0, qLen), 10);
     const price = parseFloat(`${priceInt}.${decPart}`);
-    if (isNaN(qty) || isNaN(price)) continue;
-    const diff  = Math.abs(round2(qty * price) - target);
-    if (diff < bestDiff) { bestDiff = diff; best = { qty, price }; }
+    if (isNaN(qty) || isNaN(price) || qty === 0) continue;
+    // Format A: line-discount diff
+    const diff1 = Math.abs(round2(qty * price) - target);
+    if (diff1 < bestDiff) { bestDiff = diff1; best = { qty, price, discMult: 1 }; }
+    // Format B: per-unit discount diff (scale to absolute amount for fair comparison)
+    const diff2 = Math.abs(totalCHF / qty - (price - discountCHF)) * qty;
+    if (diff2 < bestDiff) { bestDiff = diff2; best = { qty, price, discMult: qty }; }
   }
-  return best || { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`) };
+  return best || { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`), discMult: 1 };
 }
 
 function extractCountry(groupCountry) {
@@ -234,17 +253,20 @@ function parseInvoiceText(text) {
       : midText.trim();
     const { item, colour } = splitItemColour(namePart);
 
-    // Qty + price — try exact split first, fall back to best-match
-    let { qty, price } = parseQtyPrice(combined, lineTotal, lineDiscount);
-    if (Math.abs(round2(qty * price - lineDiscount) - lineTotal) > 0.01) {
-      ({ qty, price } = bestQtyPrice(combined, lineTotal, lineDiscount));
+    // Qty + price — try exact split first, fall back to best-match.
+    // discMult=1 → line-discount format (discount stored as-is).
+    // discMult=qty → per-unit discount format (discount × qty = total line discount).
+    let { qty, price, discMult } = parseQtyPrice(combined, lineTotal, lineDiscount);
+    if (Math.abs(round2(qty * price - lineDiscount * discMult) - lineTotal) > 0.01) {
+      ({ qty, price, discMult } = bestQtyPrice(combined, lineTotal, lineDiscount));
     }
+    const storedDiscount = round2(lineDiscount * discMult);
 
     invoice.items.push({
       itemNo, item, colour, colourNo, country, tariffNo,
       grossWeight,
-      quantity: qty, pricePerPiece: price, discount: lineDiscount, total: lineTotal,
-      _combined: combined,
+      quantity: qty, pricePerPiece: price, discount: storedDiscount, total: lineTotal,
+      _combined: combined, _origDiscount: lineDiscount,
     });
   }
 
@@ -260,7 +282,7 @@ function parseInvoiceText(text) {
     for (const item of invoice.items) {
       const computed = round2(item.quantity * item.pricePerPiece - item.discount);
       if (Math.abs(computed - item.total) > 0.01) {
-        const fixed = bestQtyPrice(item._combined, item.total, item.discount);
+        const fixed = bestQtyPrice(item._combined, item.total, item._origDiscount ?? item.discount);
         repairs.push({
           itemNo: item.itemNo, item: item.item, colour: item.colour,
           combined: item._combined,
@@ -269,6 +291,7 @@ function parseInvoiceText(text) {
         });
         item.quantity      = fixed.qty;
         item.pricePerPiece = fixed.price;
+        item.discount      = round2((item._origDiscount ?? item.discount) * fixed.discMult);
       }
     }
 
