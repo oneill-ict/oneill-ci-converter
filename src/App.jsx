@@ -27,6 +27,12 @@ const i18n = {
     mismatchFound: "Gevonden:",
     mismatchExp:   "Verwacht:",
     missedItemsLabel: "Ontbrekend in export",
+    missedDetailsLabel: "Reden per item",
+    missedReasons: {
+      "no tariff+gr":              "tariefnummer niet gevonden",
+      "no item number in block":   "itemnummer niet herkend",
+    },
+    missedReasonDefault: (r) => r,
     downloadAnyway:"Download toch",
     failTitle:     "Verwerking mislukt",
     filesOf:       (s, n) => `${s} van ${n} bestanden verwerkt`,
@@ -72,6 +78,12 @@ const i18n = {
     mismatchFound: "Found:",
     mismatchExp:   "Expected:",
     missedItemsLabel: "Missing from export",
+    missedDetailsLabel: "Reason per item",
+    missedReasons: {
+      "no tariff+gr":              "tariff number not found",
+      "no item number in block":   "item number not recognised",
+    },
+    missedReasonDefault: (r) => r,
     downloadAnyway:"Download anyway",
     failTitle:     "Processing failed",
     filesOf:       (s, n) => `${s} of ${n} files processed`,
@@ -544,14 +556,28 @@ function ValidationBadge({ qty, total, t }) {
   );
 }
 
+function humanReason(raw, t) {
+  if (!raw) return "";
+  // "N CHF values after tariff" → readable
+  const chfM = /^(\d+) (?:CHF|EUR|GBP|currency) values? after tariff$/.exec(raw);
+  if (chfM) return `incomplete price data (${chfM[1]} value${chfM[1] === "1" ? "" : "s"} found, need 3)`;
+  return t.missedReasons[raw] || t.missedReasonDefault(raw);
+}
+
 function PartialWarning({ result, onForceDownload, t }) {
-  // Prefer unparsedItemNos (actual item numbers from PDF text that didn't make it to output)
-  // over missedRows (lower-level block failures that may include "???" placeholders).
-  // unparsedItemNos from the 422 response are objects { itemNo, context } — extract the string.
+  const [showDetails, setShowDetails] = React.useState(false);
+
+  // unparsedItemNos: item numbers visible in PDF but missing from output (no reason known)
   const unparsed = (result.unparsedItemNos || []).map(r => typeof r === "string" ? r : r.itemNo);
-  const named    = unparsed.length > 0
-    ? unparsed
-    : (result.missedRows || []).filter(r => r.itemNo !== "???").map(r => r.itemNo);
+  // missedRows: blocks that were found but failed to parse (with reason)
+  const missed   = (result.missedRows || []).filter(r => r.itemNo !== "???");
+
+  // Items to show in the simple label line: prefer unparsed (more accurate), fall back to missed
+  const namedList = unparsed.length > 0 ? unparsed : missed.map(r => r.itemNo);
+
+  // Detailed rows to show when expanded: missed rows with reasons
+  const detailRows = missed.filter(r => r.reason);
+
   return (
     <div style={{
       background: "#1a1200", border: `1px solid #b86e00`, borderRadius: 10,
@@ -565,11 +591,46 @@ function PartialWarning({ result, onForceDownload, t }) {
         {t.mismatchFound} <strong style={{ color: T.text }}>{result.qty} {t.rows} · {fmtCHF(result.total)}</strong><br />
         {t.mismatchExp} <strong style={{ color: T.text }}>{result.expectedQty} {t.rows} · {fmtCHF(result.expectedTotal)}</strong>
       </p>
-      {named.length > 0 && (
+
+      {namedList.length > 0 && (
         <p style={{ fontSize: "0.72rem", color: T.textDim, marginTop: "0.35rem", fontFamily: "JetBrains Mono, monospace" }}>
-          {t.missedItemsLabel}: {named.join(", ")}
+          {t.missedItemsLabel}: {namedList.join(", ")}
         </p>
       )}
+
+      {detailRows.length > 0 && (
+        <div style={{ marginTop: "0.5rem" }}>
+          <button
+            type="button"
+            onClick={() => setShowDetails(v => !v)}
+            style={{
+              background: "none", border: "none", padding: 0, cursor: "pointer",
+              fontSize: "0.72rem", color: "#f59e0b", fontFamily: "Inter, sans-serif",
+              display: "flex", alignItems: "center", gap: "0.3rem",
+            }}
+          >
+            <span style={{ fontSize: "0.65rem" }}>{showDetails ? "▾" : "▸"}</span>
+            {t.missedDetailsLabel} ({detailRows.length})
+          </button>
+          {showDetails && (
+            <table style={{ marginTop: "0.4rem", borderCollapse: "collapse", width: "100%", fontSize: "0.7rem" }}>
+              <tbody>
+                {detailRows.map((r, i) => (
+                  <tr key={i} style={{ borderTop: i > 0 ? "1px solid #2a1800" : "none" }}>
+                    <td style={{ padding: "0.2rem 0.5rem 0.2rem 0", color: "#f59e0b", fontFamily: "JetBrains Mono, monospace", whiteSpace: "nowrap" }}>
+                      {r.itemNo}
+                    </td>
+                    <td style={{ padding: "0.2rem 0", color: T.textDim }}>
+                      {humanReason(r.reason, t)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
       <button type="button" onClick={onForceDownload} disabled={result.forceLoading} style={{
         background: "#f59e0b", color: "#1a0e00", border: "none", borderRadius: 8,
         padding: "0.4rem 0.9rem", fontFamily: "Inter, sans-serif",
