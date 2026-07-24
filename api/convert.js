@@ -1,8 +1,19 @@
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
+import { readFileSync } from "fs";
 
 export const config = { api: { bodyParser: { sizeLimit: "10mb" } } };
+
+// ── O'Neill item-number database ───────────────────────────────────────────
+// 15K+ item codes exported from ERP. Used as fallback when the regex patterns
+// don't cover a new item-number format (e.g. 6-digit codes, mixed alphanumeric).
+const _itemDbArr = JSON.parse(readFileSync(new URL("./item-db.json", import.meta.url), "utf8"));
+const ITEM_DB     = new Set(_itemDbArr);
+const ITEM_PREFIX = new Set();
+for (const code of ITEM_DB) {
+  for (let i = 1; i <= code.length; i++) ITEM_PREFIX.add(code.slice(0, i));
+}
 
 // ── PDF parser ─────────────────────────────────────────────────────────────
 
@@ -95,6 +106,18 @@ function extractCountry(groupCountry) {
   // "Tops & Blouses Bangladesh") — country is always the last word.
   const words = trimmed.split(/\s+/);
   return words[words.length - 1] || trimmed;
+}
+
+// Returns the longest item code from ITEM_DB that starts at text[pos],
+// or null if nothing matches. minLen guards against 2-3 char false positives.
+function findDbItemAt(text, pos, minLen = 4) {
+  let last = null;
+  for (let end = pos + minLen; end <= Math.min(pos + 18, text.length); end++) {
+    const cand = text.slice(pos, end);
+    if (!ITEM_PREFIX.has(cand)) break;
+    if (ITEM_DB.has(cand)) last = cand;
+  }
+  return last;
 }
 
 function parseInvoiceText(text) {
@@ -199,16 +222,32 @@ function parseInvoiceText(text) {
   const blocks  = itemsText.split(splitRe).filter(b => b.trim());
 
   // ── STEP 2 — Parse each block independently ───────────────────────────────
+  // blocks is a plain Array (from split), so splice() is safe during iteration.
   const missedRows = [];
-  for (const block of blocks) {
+  for (let _bi = 0; _bi < blocks.length; _bi++) {
+    const block = blocks[_bi];
     // Item number: 7-8 digit, N+5..7 digit, or alphanumeric at block start (e.g. 4868G).
     const itemNoM = /(?<![\dN])(\d{7,8})(?!\d)|(?<!\d)(N\d{5,7})(?!\d)|^(\d{4}[A-Z])|^(ONS[A-Z]+)/.exec(block);
-    if (!itemNoM) {
-      missedRows.push({ itemNo: "???", reason: "no item number in block", context: block.slice(0, 150).replace(/\s+/g, " ") });
-      continue;
+    // If regex finds nothing, try the ERP item-number database as fallback.
+    // This covers formats not in the regex: 6-digit codes (006300), mixed alphanumeric
+    // (101230ON), long eyewear codes (10BRPK1005BLCK), etc.
+    let itemNo, itemNoEnd;
+    if (itemNoM) {
+      itemNo    = itemNoM[1] || itemNoM[2] || itemNoM[3] || itemNoM[4];
+      itemNoEnd = itemNoM.index + itemNoM[0].length;
+    } else {
+      const trimmed = block.trimStart();
+      const leadWs  = block.length - trimmed.length;
+      const dbItem  = findDbItemAt(trimmed, 0);
+      const nextCh  = dbItem ? (trimmed[dbItem.length] || '') : '';
+      if (dbItem && /[A-Z0-9\-']/.test(nextCh)) {
+        itemNo    = dbItem;
+        itemNoEnd = leadWs + dbItem.length;
+      } else {
+        missedRows.push({ itemNo: "???", reason: "no item number in block", context: block.slice(0, 150).replace(/\s+/g, " ") });
+        continue;
+      }
     }
-    const itemNo    = itemNoM[1] || itemNoM[2] || itemNoM[3] || itemNoM[4];
-    const itemNoEnd = itemNoM.index + itemNoM[0].length;
 
     // Tariff number (10 digits) immediately followed by gross weight digits + "gr"
     // e.g. "6206300090240,00 gr" — no space between tariff and weight in PDF output.
@@ -237,6 +276,16 @@ function parseInvoiceText(text) {
     const combined     = first3[0][1].trim();
     const lineDiscount = parseEuropeanNumber(first3[1][1].trim());
     const lineTotal    = parseEuropeanNumber(first3[2][1].trim());
+
+    // Embedded-item check: if the block tail (after item A's 3rd CHF value) contains
+    // another tariff code, a second item is embedded. Split it off so the next loop
+    // iteration processes it as its own block.
+    const _tariffBase  = tariffPos + tariffGrM[0].length;
+    const _firstItemEnd = _tariffBase + first3[2].index + first3[2][0].length;
+    const _embTail     = block.slice(_firstItemEnd).trimStart();
+    if (_embTail.length > 20 && /\d{10}/.test(_embTail)) {
+      blocks.splice(_bi + 1, 0, _embTail);
+    }
 
     // Text between itemNo and tariff number contains: item name, colour, colourNo, category/country
     const midText = block.slice(itemNoEnd, tariffPos);
