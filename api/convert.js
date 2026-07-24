@@ -2,13 +2,17 @@ import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 
 export const config = { api: { bodyParser: { sizeLimit: "10mb" } } };
 
 // ── O'Neill item-number database ───────────────────────────────────────────
 // 15K+ item codes exported from ERP. Used as fallback when the regex patterns
 // don't cover a new item-number format (e.g. 6-digit codes, mixed alphanumeric).
-const _itemDbArr = JSON.parse(readFileSync(new URL("./item-db.json", import.meta.url), "utf8"));
+// Use explicit dirname(fileURLToPath(...)) so Vercel's file tracer picks up item-db.json.
+const _dbPath    = join(dirname(fileURLToPath(import.meta.url)), "item-db.json");
+const _itemDbArr = JSON.parse(readFileSync(_dbPath, "utf8"));
 const ITEM_DB     = new Set(_itemDbArr);
 const ITEM_PREFIX = new Set();
 for (const code of ITEM_DB) {
