@@ -10,13 +10,19 @@ export const config = { api: { bodyParser: { sizeLimit: "10mb" } } };
 // ── O'Neill item-number database ───────────────────────────────────────────
 // 15K+ item codes exported from ERP. Used as fallback when the regex patterns
 // don't cover a new item-number format (e.g. 6-digit codes, mixed alphanumeric).
-// Use explicit dirname(fileURLToPath(...)) so Vercel's file tracer picks up item-db.json.
-const _dbPath    = join(dirname(fileURLToPath(import.meta.url)), "item-db.json");
-const _itemDbArr = JSON.parse(readFileSync(_dbPath, "utf8"));
-const ITEM_DB     = new Set(_itemDbArr);
-const ITEM_PREFIX = new Set();
-for (const code of ITEM_DB) {
-  for (let i = 1; i <= code.length; i++) ITEM_PREFIX.add(code.slice(0, i));
+// Wrapped in try/catch: if the file can't be read the DB is simply empty and
+// the parser falls back to regex-only matching (same behaviour as before the DB).
+let ITEM_DB     = new Set();
+let ITEM_PREFIX = new Set();
+try {
+  const _dbPath    = join(dirname(fileURLToPath(import.meta.url)), "item-db.json");
+  const _itemDbArr = JSON.parse(readFileSync(_dbPath, "utf8"));
+  ITEM_DB = new Set(_itemDbArr);
+  for (const code of ITEM_DB) {
+    for (let i = 1; i <= code.length; i++) ITEM_PREFIX.add(code.slice(0, i));
+  }
+} catch (_e) {
+  console.error("[item-db] failed to load:", _e.message);
 }
 
 // ── PDF parser ─────────────────────────────────────────────────────────────
