@@ -868,6 +868,6 @@ export default async function handler(req, res) {
     p: it.pricePerPiece,
     t: it.total,
   }));
-  res.setHeader("X-Preview", JSON.stringify(previewRows));
+  res.setHeader("X-Preview", encodeURIComponent(JSON.stringify(previewRows)));
   return res.status(200).end(Buffer.from(xlsxBuffer));
 }
