@@ -228,7 +228,7 @@ function parseInvoiceText(text) {
   // N\d{5,7}: N-prefixed items (N+5 to N+7 digits).
   // (?<=CHF/EUR/GBP )\d{4}[A-Z]: alphanumeric items (e.g. 4868G, 5045B) that appear
   //   immediately after a CHF/EUR/GBP total line (collapsed newline becomes space).
-  const splitRe = /(?<![\dN])(?=\d{7,8}(?!\d))|(?<!\d)(?=N\d{5,7}(?!\d))|(?<=(?:CHF|EUR|GBP) )(?=\d{4}[A-Z])|(?<=(?:CHF|EUR|GBP) )(?=ONS[A-Z])/g;
+  const splitRe = /(?<![\dN])(?=\d{7,8}(?!\d))|(?<!\d)(?=N\d{5,7}(?!\d))|(?<=(?:CHF|EUR|GBP) )(?=\d{4}[A-Z])|(?<=(?:CHF|EUR|GBP) )(?=\d{4} [A-Z])|(?<=(?:CHF|EUR|GBP) )(?=ONS[A-Z])/g;
   const blocks  = itemsText.split(splitRe).filter(b => b.trim());
 
   // ── STEP 2 — Parse each block independently ───────────────────────────────
@@ -237,13 +237,13 @@ function parseInvoiceText(text) {
   for (let _bi = 0; _bi < blocks.length; _bi++) {
     const block = blocks[_bi];
     // Item number: 7-8 digit, N+5..7 digit, or alphanumeric at block start (e.g. 4868G).
-    const itemNoM = /(?<![\dN])(\d{7,8})(?!\d)|(?<!\d)(N\d{5,7})(?!\d)|^(\d{4}[A-Z])|^(ONS[A-Z]+)/.exec(block);
+    const itemNoM = /(?<![\dN])(\d{7,8})(?!\d)|(?<!\d)(N\d{5,7})(?!\d)|^(\d{4}[A-Z])|^(ONS[A-Z]+)|^(\d{4})(?= [A-Z])/.exec(block);
     // If regex finds nothing, try the ERP item-number database as fallback.
     // This covers formats not in the regex: 6-digit codes (006300), mixed alphanumeric
     // (101230ON), long eyewear codes (10BRPK1005BLCK), etc.
     let itemNo, itemNoEnd;
     if (itemNoM) {
-      itemNo    = itemNoM[1] || itemNoM[2] || itemNoM[3] || itemNoM[4];
+      itemNo    = itemNoM[1] || itemNoM[2] || itemNoM[3] || itemNoM[4] || itemNoM[5];
       itemNoEnd = itemNoM.index + itemNoM[0].length;
     } else {
       const trimmed = block.trimStart();
