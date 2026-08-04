@@ -368,12 +368,16 @@ function parseInvoiceText(text) {
     qtyOk   = expectedQty  === null || parsedQty === expectedQty;
   }
 
-  // Find item numbers present in itemsText but absent from parsed results — diagnostic
+  // Find item numbers present in itemsText but absent from parsed results — diagnostic.
+  // Groups: (1) 7-8 digit, (2) N-prefix, (3) 4digit+letter no-space, (4) 4digit space variant, (5) ONS-prefix
   const parsedItemNos = new Set(invoice.items.map(i => i.itemNo));
   const unparsedItemNos = [];
-  for (const c of itemsText.matchAll(/(?<![\dN])(\d{7,8})(?!\d)|(?<!\d)(N\d{5,7})(?!\d)/g)) {
-    const itemNum = c[1] || c[2];
-    if (!parsedItemNos.has(itemNum)) {
+  const _seenUnparsed = new Set();
+  const _scanRe = /(?<![\dN])(\d{7,8})(?!\d)|(?<!\d)(N\d{5,7})(?!\d)|(?<=(?:CHF|EUR|GBP) )(\d{4}[A-Z])|(?<=(?:CHF|EUR|GBP) )(\d{4})(?= [A-Z])|(?<=(?:CHF|EUR|GBP) )(ONS[A-Z]+)/g;
+  for (const c of itemsText.matchAll(_scanRe)) {
+    const itemNum = c[1] || c[2] || c[3] || c[4] || c[5];
+    if (itemNum && !parsedItemNos.has(itemNum) && !_seenUnparsed.has(itemNum)) {
+      _seenUnparsed.add(itemNum);
       const pos = c.index;
       unparsedItemNos.push({
         itemNo: itemNum,
