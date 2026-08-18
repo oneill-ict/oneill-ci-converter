@@ -495,10 +495,22 @@ export default function App() {
     // Once the ZIP leaves the browser the on-screen warning is gone, so an
     // export that cannot be vouched for has to carry its status in the filename.
     const flagged = [];
+    // JSZip overwrites an entry silently when the name repeats, so two source
+    // PDFs with the same basename — easy when pulling from two folders — used
+    // to leave one file in the ZIP while the screen still counted both.
+    const used = new Set();
     for (const r of results) {
       if (!r.blob) continue;
-      const name = exportNameFor(r, t);
-      if (name !== r.xlsxName) flagged.push(name);
+      const marked = exportNameFor(r, t);   // carries a trust suffix, if any
+      let name = marked, n = 1;
+      while (used.has(name)) {
+        n++;
+        name = marked.replace(/\.xlsx$/i, "") + ` (${n}).xlsx`;
+      }
+      used.add(name);
+      // Flag on the trust marker, not on the collision suffix — a clean file
+      // that merely got renamed does not belong in the "not approved" list.
+      if (marked !== r.xlsxName) flagged.push(name);
       zip.file(name, r.blob);
     }
     if (flagged.length) {
