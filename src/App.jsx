@@ -19,12 +19,12 @@ const i18n = {
     downloadStart: "Download gestart",
     validOk:       "Validatie geslaagd",
     validUnchecked:"Niet gecontroleerd — factuurtotaal niet gevonden",
-    validRows:     (q, t) => `${q} regels · CHF ${t}`,
+    validRows:     (q, t) => `${q} stuks · CHF ${t}`,
     redownload:    "Opnieuw downloaden",
     newInvoice:    "Nieuwe factuur converteren",
     newInvoices:   "Nieuwe facturen",
     checkResults:  "Controleer de resultaten",
-    mismatchTitle: "Aantal regels komt niet overeen",
+    mismatchTitle: "Aantal stuks komt niet overeen",
     mismatchFound: "Gevonden:",
     mismatchExp:   "Verwacht:",
     missedItemsLabel: "Ontbrekend in export",
@@ -63,7 +63,7 @@ const i18n = {
       : `${n} bestanden overgeslagen: geen PDF.`,
     recentTitle:   "Recent",
     clearHistory:  "Wissen",
-    rows:          "regels",
+    rows:          "stuks",
     justNow:       "zojuist",
     minAgo:        (n) => `${n} min geleden`,
     hourAgo:       (n) => `${n} uur geleden`,
@@ -95,12 +95,12 @@ const i18n = {
     downloadStart: "Download started",
     validOk:       "Validation passed",
     validUnchecked:"Not verified — invoice total not found",
-    validRows:     (q, t) => `${q} lines · CHF ${t}`,
+    validRows:     (q, t) => `${q} pieces · CHF ${t}`,
     redownload:    "Download again",
     newInvoice:    "Convert new invoice",
     newInvoices:   "New invoices",
     checkResults:  "Check the results",
-    mismatchTitle: "Line count mismatch",
+    mismatchTitle: "Piece count mismatch",
     mismatchFound: "Found:",
     mismatchExp:   "Expected:",
     missedItemsLabel: "Missing from export",
@@ -139,7 +139,7 @@ const i18n = {
       : `${n} files skipped: not a PDF.`,
     recentTitle:   "Recent",
     clearHistory:  "Clear",
-    rows:          "lines",
+    rows:          "pieces",
     justNow:       "just now",
     minAgo:        (n) => `${n} min ago`,
     hourAgo:       (n) => `${n} hr ago`,
@@ -231,8 +231,10 @@ async function convertFile(file, force = false) {
   const unparsedCount    = parseInt(res.headers.get("X-Unparsed-Count") || "0", 10) || unparsedItemNos.length;
   const uncertainItems   = parseHeader(res.headers.get("X-Uncertain-Items"), false);
   const uncertainCount   = parseInt(res.headers.get("X-Uncertain-Count") || "0", 10) || uncertainItems.length;
+  // Invoice lines, as opposed to `qty` which is the total piece count.
+  const lineCount        = parseInt(res.headers.get("X-Line-Count") || "0", 10);
   const blob             = await res.blob();
-  return { blob, qty, total, checked, preview, unparsedItemNos, unparsedCount, uncertainItems, uncertainCount };
+  return { blob, qty, total, checked, lineCount, preview, unparsedItemNos, unparsedCount, uncertainItems, uncertainCount };
 }
 
 // ── App ─────────────────────────────────────────────────────────────────────
@@ -291,10 +293,10 @@ export default function App() {
       const xlsxName = file.name.replace(/\.[^.]+$/, "") + ".xlsx";
 
       try {
-        const { blob, qty, total, checked, preview, unparsedItemNos, uncertainItems, uncertainCount } = await convertFile(file);
+        const { blob, qty, total, checked, lineCount, preview, unparsedItemNos, uncertainItems, uncertainCount } = await convertFile(file);
         // Single file: trigger immediate download
         if (pdfs.length === 1) triggerDownload(blob, xlsxName);
-        batch.push({ name: file.name, xlsxName, blob, qty, total, checked, preview,
+        batch.push({ name: file.name, xlsxName, blob, qty, total, checked, lineCount, preview,
           unparsedItemNos: unparsedItemNos || [], uncertainItems: uncertainItems || [], uncertainCount: uncertainCount || 0,
           error: null, isPartial: false, file });
       } catch (e) {
@@ -881,8 +883,10 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
 
       {isPartial && <PartialWarning result={result} onForceDownload={onForceDownload} t={t} />}
 
+      {/* totalItems is a line count, not a piece count — passing qty here
+          produced "+213 more rows" on a forty-line invoice. */}
       {isOk && result.preview?.length > 0 && (
-        <PreviewTable rows={result.preview} totalItems={result.qty} t={t} />
+        <PreviewTable rows={result.preview} totalItems={result.lineCount || result.preview.length} t={t} />
       )}
 
       <div style={{ marginTop: "1.25rem", textAlign: "center" }}>
