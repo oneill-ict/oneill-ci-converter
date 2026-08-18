@@ -93,6 +93,7 @@ const i18n = {
       ? "1 bestand overgeslagen: geen PDF."
       : `${n} bestanden overgeslagen: geen PDF.`,
     recentTitle:   "Recent",
+    historyLegacy: "· ouder, niet gecontroleerd",
     clearHistory:  "Wissen",
     rows:          "stuks",
     justNow:       "zojuist",
@@ -203,6 +204,7 @@ const i18n = {
       ? "1 file skipped: not a PDF."
       : `${n} files skipped: not a PDF.`,
     recentTitle:   "Recent",
+    historyLegacy: "· older, not verified",
     clearHistory:  "Clear",
     rows:          "pieces",
     justNow:       "just now",
@@ -344,8 +346,17 @@ async function convertFile(file, force = false) {
 const HISTORY_KEY = "oneill_ci_history";
 const MAX_HISTORY = 10;
 
+// Entries written before the history started filtering on trustOf cannot be
+// vouched for — they were stored whenever a conversion did not throw. They stay
+// in the list, but marked, because drawing them with the same green tick as a
+// verified export claims something that was never checked.
+const HISTORY_VERSION = 2;
+
 function loadHistory() {
-  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"); } catch { return []; }
+  try {
+    const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+    return raw.map(h => ({ ...h, legacy: h.v !== HISTORY_VERSION }));
+  } catch { return []; }
 }
 function saveHistory(entries) {
   try { localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, MAX_HISTORY))); } catch {}
@@ -455,7 +466,7 @@ export default function App() {
     // them with a green tick — with no `checked` field stored to correct it.
     const newEntries = batch
       .filter(r => trustOf(r).ok)
-      .map(r => ({ name: r.xlsxName, qty: r.qty, total: r.total, ts: Date.now() }));
+      .map(r => ({ name: r.xlsxName, qty: r.qty, total: r.total, ts: Date.now(), v: HISTORY_VERSION }));
     if (newEntries.length) {
       setHistory(prev => {
         const updated = [...newEntries, ...prev].slice(0, MAX_HISTORY);
@@ -755,13 +766,22 @@ function UploadZone({ dragging, onPickFile, history, onClearHistory, t }) {
                 border: `1px solid ${T.line}`,
               }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", minWidth: 0 }}>
-                  <CheckCircle2 size={12} color={T.good} style={{ flexShrink: 0 }} />
+                  {/* A legacy entry predates the trust filter, so it gets a neutral
+                      clock rather than a tick it never earned. */}
+                  {h.legacy
+                    ? <Clock size={12} color={T.textGhost} style={{ flexShrink: 0 }} />
+                    : <CheckCircle2 size={12} color={T.good} style={{ flexShrink: 0 }} />}
                   <span style={{ fontSize: "0.75rem", color: T.text, fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {h.name}
                   </span>
+                  {h.legacy && (
+                    <span style={{ fontSize: "0.62rem", color: T.textGhost, flexShrink: 0, whiteSpace: "nowrap" }}>
+                      {t.historyLegacy}
+                    </span>
+                  )}
                 </div>
                 <div style={{ display: "flex", gap: "0.75rem", flexShrink: 0, marginLeft: "0.75rem" }}>
-                  <span style={{ fontSize: "0.7rem", color: T.good }}>{h.qty} {t.rows}</span>
+                  <span style={{ fontSize: "0.7rem", color: h.legacy ? T.textGhost : T.good }}>{h.qty} {t.rows}</span>
                   <span style={{ fontSize: "0.7rem", color: T.textDim, fontFamily: "JetBrains Mono, monospace" }}>CHF {fmtCHF(h.total)}</span>
                   <span style={{ fontSize: "0.68rem", color: T.textGhost }}>{timeAgo(h.ts, t)}</span>
                 </div>
