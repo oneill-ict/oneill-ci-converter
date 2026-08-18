@@ -83,8 +83,11 @@ function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
     const diff2 = Math.abs(totalCHF / qty - (price - discountCHF)) * qty;
     if (diff2 < bestDiff) { bestDiff = diff2; best = { qty, price, discMult: qty }; }
   }
-  return best || { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`), discMult: 1 };
+  if (best) return { ...best, diff: bestDiff };
+  return { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`), discMult: 1, diff: Infinity };
 }
+
+const QTY_SPLIT_TOLERANCE = 0.02;
 
 function extractCountry(groupCountry) {
   const trimmed = groupCountry.trim();
@@ -228,14 +231,17 @@ function parseInvoiceText(text) {
     const { item, colour } = splitItemColour(namePart);
 
     let { qty, price, discMult } = parseQtyPrice(combined, lineTotal, lineDiscount);
+    let qtyUncertain = false;
     if (Math.abs(round2(qty * price - lineDiscount * discMult) - lineTotal) > 0.01) {
-      ({ qty, price, discMult } = bestQtyPrice(combined, lineTotal, lineDiscount));
+      const guess = bestQtyPrice(combined, lineTotal, lineDiscount);
+      ({ qty, price, discMult } = guess);
+      qtyUncertain = guess.diff > QTY_SPLIT_TOLERANCE;
     }
     const storedDiscount = round2(lineDiscount * discMult);
 
     items.push({ itemNo, item, colour, colourNo, country, tariffNo, grossWeight,
       quantity: qty, pricePerPiece: price, discount: storedDiscount, total: lineTotal,
-      _combined: combined, _origDiscount: lineDiscount });
+      _combined: combined, _origDiscount: lineDiscount, _qtyUncertain: qtyUncertain });
   }
 
   let parsedQty   = items.reduce((s, i) => s + i.quantity, 0);
@@ -267,6 +273,7 @@ function parseInvoiceText(text) {
     totalOk, qtyOk,
     valid: totalOk && qtyOk,
     repairs,
+    uncertainLines: items.filter(i => i._qtyUncertain).map(i => i.itemNo),
   };
 }
 
@@ -314,6 +321,11 @@ for (const pdfPath of pdfs) {
       // it is the shape a future silent gap would take.
       for (const mr of r.missedRows) {
         console.log(`         ↳ ${mr.itemNo}: ${mr.reason} — "${mr.context.slice(0, 90)}"`);
+      }
+      // Totals reconcile but a quantity could not be derived — the number in
+      // the export is a guess, and quantity is a customs-declared field.
+      if (r.uncertainLines.length > 0) {
+        console.log(`         ⚠ guessed quantity on ${r.uncertainLines.length} line(s): ${r.uncertainLines.slice(0, 8).join(", ")}`);
       }
       results.pass.push(label);
     } else {

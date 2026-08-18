@@ -103,8 +103,16 @@ function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
     const diff2 = Math.abs(totalCHF / qty - (price - discountCHF)) * qty;
     if (diff2 < bestDiff) { bestDiff = diff2; best = { qty, price, discMult: qty }; }
   }
-  return best || { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`), discMult: 1 };
+  // bestDiff is returned so callers can tell a reconciled split from a guess.
+  // Without it this function silently returned its closest attempt no matter how
+  // far off, and quantity is a customs-declared field.
+  if (best) return { ...best, diff: bestDiff };
+  return { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`), discMult: 1, diff: Infinity };
 }
+
+// A correct split reconciles to the cent; anything above this is not a split
+// the invoice supports, only the least-bad option tried.
+const QTY_SPLIT_TOLERANCE = 0.02;
 
 function extractCountry(groupCountry) {
   const trimmed = groupCountry.trim();
@@ -400,8 +408,13 @@ function parseInvoiceText(text) {
     // discMult=1 → line-discount format (discount stored as-is).
     // discMult=qty → per-unit discount format (discount × qty = total line discount).
     let { qty, price, discMult } = parseQtyPrice(combined, lineTotal, lineDiscount);
+    let qtyUncertain = false;
     if (Math.abs(round2(qty * price - lineDiscount * discMult) - lineTotal) > 0.01) {
-      ({ qty, price, discMult } = bestQtyPrice(combined, lineTotal, lineDiscount));
+      const guess = bestQtyPrice(combined, lineTotal, lineDiscount);
+      ({ qty, price, discMult } = guess);
+      // No split of this run reconciles with the line total, so the quantity
+      // below is the closest attempt rather than a value the invoice supports.
+      qtyUncertain = guess.diff > QTY_SPLIT_TOLERANCE;
     }
     const storedDiscount = round2(lineDiscount * discMult);
 
@@ -409,7 +422,7 @@ function parseInvoiceText(text) {
       itemNo, item, colour, colourNo, country, tariffNo,
       grossWeight,
       quantity: qty, pricePerPiece: price, discount: storedDiscount, total: lineTotal,
-      _combined: combined, _origDiscount: lineDiscount,
+      _combined: combined, _origDiscount: lineDiscount, _qtyUncertain: qtyUncertain,
     });
   }
 
@@ -431,10 +444,12 @@ function parseInvoiceText(text) {
           combined: item._combined,
           oldQty: item.quantity, oldPrice: item.pricePerPiece,
           newQty: fixed.qty,    newPrice: fixed.price,
+          uncertain: fixed.diff > QTY_SPLIT_TOLERANCE,
         });
         item.quantity      = fixed.qty;
         item.pricePerPiece = fixed.price;
         item.discount      = round2((item._origDiscount ?? item.discount) * fixed.discMult);
+        item._qtyUncertain = fixed.diff > QTY_SPLIT_TOLERANCE;
       }
     }
 
@@ -471,6 +486,13 @@ function parseInvoiceText(text) {
     checked: expectedQty !== null || expectedTotal !== null,
     parsedQty, parsedTotal, expectedQty, expectedTotal,
     totalOk, qtyOk, repairs, missedRows,
+    // Lines whose quantity/price split could not be reconciled with the line
+    // total. The line total itself is read straight from the PDF and is correct,
+    // so the invoice total still adds up — but the split is a guess, and the
+    // quantity is what gets declared to customs.
+    uncertainLines: invoice.items
+      .filter(i => i._qtyUncertain)
+      .map(i => ({ itemNo: i.itemNo, item: i.item, qty: i.quantity, price: i.pricePerPiece, total: i.total })),
     unparsedItemNos: [...new Map(unparsedItemNos.map(x => [x.itemNo, x])).values()],
   };
 
@@ -931,6 +953,9 @@ async function handleConvert(req, res) {
     missed:         (v?.missedRows || []).map(r => ({ itemNo: r.itemNo, reason: r.reason })).slice(0, 10),
     unparsedCount:  (v?.unparsedItemNos || []).length,
     unparsed:       (v?.unparsedItemNos || []).map(r => r.itemNo),
+    repairCount:    (v?.repairs || []).length,
+    uncertainCount: (v?.uncertainLines || []).length,
+    uncertain:      (v?.uncertainLines || []).map(r => r.itemNo).slice(0, 10),
   }));
 
   // Validation mismatch: return structured error so frontend can show a readable message.
@@ -944,6 +969,7 @@ async function handleConvert(req, res) {
       expectedTotal:    v.expectedTotal,
       missedRows:       v.missedRows,
       unparsedItemNos:  v.unparsedItemNos,
+      uncertainLines:   v.uncertainLines,
     });
   }
 
@@ -991,6 +1017,13 @@ async function handleConvert(req, res) {
   if (unparsedNos.length > 0) {
     res.setHeader("X-Unparsed-Count", String(unparsedNos.length));
     setSafeHeader(res, "X-Unparsed-Items", JSON.stringify(unparsedNos.slice(0, 40)));
+  }
+  // Lines whose quantity is a guess. The totals can still add up, so this is the
+  // only signal the user gets that a declared quantity may be wrong.
+  const uncertain = v?.uncertainLines || [];
+  if (uncertain.length > 0) {
+    res.setHeader("X-Uncertain-Count", String(uncertain.length));
+    setSafeHeader(res, "X-Uncertain-Items", JSON.stringify(uncertain.slice(0, 40).map(r => r.itemNo)));
   }
   // First-10-rows preview so the frontend can show a table before confirming download
   const previewRows = invoice.items.slice(0, 10).map(it => ({
