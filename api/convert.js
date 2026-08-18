@@ -892,7 +892,7 @@ export default async function handler(req, res) {
 
   // Use the original PDF filename (without extension) if provided, else fall back to order/date
   let exportName;
-  if (filename) {
+  if (typeof filename === "string" && filename) {
     exportName = filename.replace(/\.[^.]+$/, ""); // strip extension
   } else {
     const orderSlug = invoice.orderNumber
@@ -901,7 +901,16 @@ export default async function handler(req, res) {
     exportName = `CI_${orderSlug}`;
   }
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="${exportName}.xlsx"`);
+  // Node rejects header values above U+00FF with ERR_INVALID_CHAR, and the
+  // filename comes straight from the user's disk — "O'Neill CI.pdf" with a
+  // curly apostrophe (U+2019, which Word and Outlook insert automatically)
+  // used to crash the response after the Excel had already been built.
+  // RFC 6266: a plain-ASCII filename for old clients plus filename* for the rest.
+  const asciiName = exportName.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "'");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${asciiName}.xlsx"; filename*=UTF-8''${encodeURIComponent(exportName + ".xlsx")}`
+  );
   res.setHeader("Content-Length", xlsxBuffer.byteLength);
   // Expose validation stats so the frontend can show a summary
   res.setHeader("X-Validation-Qty",   String(invoice._validation?.parsedQty   ?? ""));
