@@ -40,19 +40,30 @@ const CASES = [
    "Goods total2913304,16 EUR Subtotal3304,16 EUR",
    { qty: 291, total: 3304.16 }],
 
-  // ── Credit notes ──────────────────────────────────────────────────────────
+  // ── Credit notes are detected and refused, not parsed ─────────────────────
+  // The per-line reader has no sign handling, so a parsed credit note ships a
+  // workbook with every amount positive. Detection must fire on all shapes.
   ["credit note, glued",
    "Goods total29-3.304,16 EUR Subtotal-3.304,16 EUR",
-   { qty: 29, total: -3304.16 }],
+   { qty: null, total: null, creditNote: true }],
   ["credit note, spaced",
    "Goods total29 -3.304,16 EUR Subtotal-3.304,16 EUR",
-   { qty: 29, total: -3304.16 }],
+   { qty: null, total: null, creditNote: true }],
   ["credit note with a discount line",
    "Goods total15-487,34 EUR Discount-87,34 EUR Subtotal-400,00 EUR",
-   { qty: 15, total: -487.34 }],
+   { qty: null, total: null, creditNote: true }],
   ["credit note without thousands separator",
    "Goods total4-399,98 EUR Subtotal-399,98 EUR",
-   { qty: 4, total: -399.98 }],
+   { qty: null, total: null, creditNote: true }],
+
+  // ── Hyphens that are not a minus sign ─────────────────────────────────────
+  ["hyphenated token is not a quantity",
+   "Goods total 12-34 8.429,10 CHF Subtotal8.429,10 CHF",
+   { qty: null, total: null }],
+  ["dash placeholder must not become NaN",
+   "Goods total - 8.429,10 CHF Subtotal 8.429,10 CHF",
+   { qty: null, total: null }],
+
   ["tariff table before the footer falls back to the whole text",
    "SUBTOTAL TARIFF NO. Tariff No.Subtotal 420292989089,10CHF Goods total226 8.429,10 CHF Subtotal8.429,10 CHF",
    { qty: 226, total: 8429.10 }],
@@ -73,7 +84,8 @@ let pass = 0, fail = 0;
 for (const [name, input, want] of CASES) {
   const got = readGoodsTotal(input);
   const eq = (a, b) => a === null ? b === null : (b !== null && Math.abs(a - b) < 0.005);
-  const ok = got.qty === want.qty && eq(want.total, got.total);
+  const ok = got.qty === want.qty && eq(want.total, got.total)
+          && (!want.creditNote || got.creditNote === true);
   if (ok) { pass++; console.log(`  ok    ${name}`); }
   else {
     fail++;

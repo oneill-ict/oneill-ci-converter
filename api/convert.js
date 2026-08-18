@@ -144,10 +144,16 @@ function extractCountry(groupCountry) {
 // A well-formed European amount: "0,00", "1.155,47", "500,00", "913304,16".
 // Rejects a spurious leading zero ("01.155,47"), which is what keeps the split
 // of a glued run unique.
-// The optional leading minus covers credit notes, where the goods total and the
-// subtotal are negative. Without it the reader refused and validation was
-// skipped entirely on every credit note.
-const AMOUNT_RE = /^-?(?:0|[1-9]\d{0,2}(?:\.\d{3})*|[1-9]\d*),\d{2}$/;
+const AMOUNT_RE = /^(?:0|[1-9]\d{0,2}(?:\.\d{3})*|[1-9]\d*),\d{2}$/;
+
+// A negative amount anywhere in the footer means a credit note. Detected rather
+// than parsed: the per-line reader has no sign handling, so a credit note comes
+// out with every amount positive AND the qty/price run shifted by one character
+// — two lines of -17,39 became +34,78 in the workbook. Reading the footer
+// total as negative without fixing the lines made that worse, not better: the
+// invoice then failed validation and the auto-force downloaded the wrong file.
+// Refusing is the honest state until there is a real credit note to build on.
+const NEGATIVE_AMOUNT_RE = /-\d[\d.]*,\d{2}/;
 
 function readGoodsTotal(flatText) {
   const CUR = /(?:CHF|EUR|GBP|USD|CAD)/.source;
@@ -167,13 +173,30 @@ function readGoodsTotal(flatText) {
   // glued grand total further down.
   //   spaced: "Goods total226 8.429,10 CHF"   → two runs
   //   glued:  "Goods total2913.304,16 EUR"    → one run
+  // Credit-note detection runs on the footer window BEFORE the pattern match,
+  // because on a glued credit note ("Goods total29-3.304,16") the pattern does
+  // not match at all — the run stops at the minus. Checking afterwards would
+  // silently miss exactly the shape that matters. See NEGATIVE_AMOUNT_RE.
+  let gtPos = -1;
+  for (const m of zone.matchAll(/Goods total/gi)) gtPos = m.index;
+  if (gtPos >= 0 && NEGATIVE_AMOUNT_RE.test(zone.slice(gtPos, gtPos + 300))) {
+    return { qty: null, total: null, creditNote: true };
+  }
+
   let last = null;
-  // Hyphens allowed inside the run: a glued credit note reads "Goods total29-3.304,16".
-  for (const m of zone.matchAll(new RegExp(`Goods total\\s*([-\\d.,]+)(?:\\s+(-?[\\d.,]+))?\\s*${CUR}`, "gi"))) last = m;
+  // A minus is only ever a leading sign here, never mid-run. Allowing it anywhere
+  // inside the class turned a hyphenated token like "12-34" into a confident
+  // quantity of 12, and let parseInt produce NaN — which passes every
+  // `!== null` guard and then fails every equality check.
+  for (const m of zone.matchAll(new RegExp(`Goods total\\s*(-?[\\d.,]+)(?:\\s+(-?[\\d.,]+))?\\s*${CUR}`, "gi"))) last = m;
   if (!last) return { qty: null, total: null };
 
   if (last[2] !== undefined) {
-    return { qty: parseInt(last[1], 10), total: parseEuropeanNumber(last[2]) };
+    const q = parseInt(last[1], 10);
+    // NaN would satisfy `!== null` and fail every comparison, producing a
+    // guaranteed mismatch reported as "expected: null".
+    if (!Number.isFinite(q)) return { qty: null, total: null };
+    return { qty: q, total: parseEuropeanNumber(last[2]) };
   }
 
   // Glued: pin the amount from the footer rows that follow. `\s*` after each
@@ -324,7 +347,8 @@ function parseInvoiceText(text) {
 
   // Expected totals — read from the LAST "Goods total" line (the grand total).
   // Scan the full flatText so intermediate per-page subtotals don't shadow it.
-  const { qty: expectedQty, total: expectedTotal } = readGoodsTotal(flatText);
+  const { qty: expectedQty, total: expectedTotal, creditNote } = readGoodsTotal(flatText);
+  invoice.creditNote = !!creditNote;
 
   // ── STEP 1 — Split text into per-item blocks ─────────────────────────────
   // Split on item-number boundaries.
@@ -422,7 +446,9 @@ function parseInvoiceText(text) {
     // block from picking up footer CHF amounts (Goods total, Subtotal, VAT, Total)
     // that appear between the last item and SUBTOTAL TARIFF NO.
     const afterTariffText = block.slice(tariffEnd);
-    const chfAfterTariff  = [...afterTariffText.matchAll(/([\d., ]+?)\s*(?:CHF|EUR|GBP|USD|CAD)/g)];
+    // Same standalone-token guard as the tariff search: without it the "CAD" in
+    // a name like CADET could close a run and supply a phantom third amount.
+    const chfAfterTariff  = [...afterTariffText.matchAll(/([\d., ]+?)\s*(?<![A-Z])(?:CHF|EUR|GBP|USD|CAD)(?![A-Z])/g)];
     if (chfAfterTariff.length < 3) {
       missedRows.push({ itemNo, reason: `${chfAfterTariff.length} CHF values after tariff`, context: block.slice(0, 200).replace(/\s+/g, " ") });
       continue;
@@ -1034,6 +1060,17 @@ async function handleConvert(req, res) {
     console.log(JSON.stringify({ event: "ci_no_items", filename: filename || null, currency: invoice.currency }));
     return res.status(422).json({
       error: "Geen factuurregels gevonden. Controleer of dit een O'Neill Commercial Invoice is.",
+    });
+  }
+
+  // Credit notes are refused outright, before the mismatch path — that one has a
+  // force bypass, and forcing a credit note ships a workbook with every amount
+  // sign-flipped. Deliberately not forceable: the numbers are wrong, not merely
+  // unverified. No parsedQty in the body, so the client shows a plain error.
+  if (invoice.creditNote) {
+    console.log(JSON.stringify({ event: "ci_credit_note", filename: filename || null }));
+    return res.status(422).json({
+      error: "Dit lijkt een creditnota (negatieve bedragen). Die worden nog niet ondersteund — de bedragen zouden zonder minteken in het Excel komen. Maak deze handmatig op.",
     });
   }
 
