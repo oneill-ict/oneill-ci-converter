@@ -27,9 +27,10 @@ const i18n = {
     newInvoices:   "Nieuwe facturen",
     checkResults:  "Controleer de resultaten",
     mismatchTitle: (axis) =>
-      axis === "excel" ? "Het Excel telt niet op tot het factuurbedrag"
-    : axis === "total" ? "Bedrag komt niet overeen met de factuur"
-    :                    "Aantal stuks komt niet overeen",
+      axis === "excel"   ? "Het Excel telt niet op tot het factuurbedrag"
+    : axis === "total"   ? "Bedrag komt niet overeen met de factuur"
+    : axis === "unknown" ? "Controle mislukt — reden onbekend"
+    :                      "Aantal stuks komt niet overeen",
     fromTheExcel:  "(zoals het Excel het optelt)",
     mismatchFound: "Gevonden:",
     mismatchExp:   "Verwacht:",
@@ -93,7 +94,7 @@ const i18n = {
       ? "1 bestand overgeslagen: geen PDF."
       : `${n} bestanden overgeslagen: geen PDF.`,
     recentTitle:   "Recent",
-    historyLegacy: "· ouder, niet gecontroleerd",
+    historyLegacy: "· van vóór de laatste update",
     clearHistory:  "Wissen",
     rows:          "stuks",
     justNow:       "zojuist",
@@ -141,9 +142,10 @@ const i18n = {
     newInvoices:   "New invoices",
     checkResults:  "Check the results",
     mismatchTitle: (axis) =>
-      axis === "excel" ? "The Excel does not add up to the invoice amount"
-    : axis === "total" ? "Amount does not match the invoice"
-    :                    "Piece count mismatch",
+      axis === "excel"   ? "The Excel does not add up to the invoice amount"
+    : axis === "total"   ? "Amount does not match the invoice"
+    : axis === "unknown" ? "Validation failed — reason unknown"
+    :                      "Piece count mismatch",
     fromTheExcel:  "(as the Excel adds up)",
     mismatchFound: "Found:",
     mismatchExp:   "Expected:",
@@ -204,7 +206,7 @@ const i18n = {
       ? "1 file skipped: not a PDF."
       : `${n} files skipped: not a PDF.`,
     recentTitle:   "Recent",
-    historyLegacy: "· older, not verified",
+    historyLegacy: "· from before the last update",
     clearHistory:  "Clear",
     rows:          "pieces",
     justNow:       "just now",
@@ -348,10 +350,12 @@ async function convertFile(file, force = false) {
 const HISTORY_KEY = "oneill_ci_history";
 const MAX_HISTORY = 10;
 
-// Entries written before the history started filtering on trustOf cannot be
-// vouched for — they were stored whenever a conversion did not throw. They stay
-// in the list, but marked, because drawing them with the same green tick as a
-// verified export claims something that was never checked.
+// Entries without a version marker cannot be placed: the trust filter may or may
+// not have been in force when they were written. They stay in the list but are
+// drawn neutrally rather than with a verified tick.
+// The label says "from before the last update" rather than "not verified" —
+// entries from the immediately preceding deploy WERE trust-filtered, and calling
+// them unverified is as wrong as the tick was.
 const HISTORY_VERSION = 2;
 
 function loadHistory() {
@@ -667,17 +671,16 @@ function trustOf(r) {
   return { ok: true, kind: "ok" };
 }
 
-// Filename an export must carry so its status survives leaving the browser.
-// Applied on EVERY download route, not just the ZIP — the auto-download after
-// a mismatch used to land in the downloads folder under a clean name before
-// the warning had even rendered.
 // Which validation axis actually failed, most specific first — shared by the
 // single view and the batch row so the two can never name different reasons.
+// The final fallback is only reachable if all three flags are missing (a stale
+// bundle against a newer server, say); "unknown" avoids asserting a reason.
 function rowAxis(r) {
   if (r.qtyOk   === false) return "qty";
   if (r.excelOk === false) return "excel";
   if (r.totalOk === false) return "total";
-  return "qty";
+  return r.qtyOk === undefined && r.excelOk === undefined && r.totalOk === undefined
+    ? "unknown" : "qty";
 }
 
 // The figure worth quoting is always the workbook's own sum — that is the number
