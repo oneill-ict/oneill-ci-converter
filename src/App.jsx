@@ -77,6 +77,9 @@ const i18n = {
     download:      "Download",
     anyway:        "Toch",
     silentGapNote: (n) => `Let op: ${n} itemnummer(s) uit de PDF zijn niet in de export opgenomen —`,
+    uncertainQtyNote: (n) => n === 1
+      ? "Let op: bij 1 regel kon het aantal niet uit de factuur worden afgeleid — het getal in de export is een schatting. Controleer:"
+      : `Let op: bij ${n} regels kon het aantal niet uit de factuur worden afgeleid — die getallen zijn een schatting. Controleer:`,
   },
   EN: {
     title:         "Commercial Invoice Converter",
@@ -150,6 +153,9 @@ const i18n = {
     download:      "Download",
     anyway:        "Anyway",
     silentGapNote: (n) => `Note: ${n} item number(s) from the PDF were not included in the export —`,
+    uncertainQtyNote: (n) => n === 1
+      ? "Note: on 1 line the quantity could not be derived from the invoice — the number in the export is an estimate. Please check:"
+      : `Note: on ${n} lines the quantity could not be derived from the invoice — those numbers are estimates. Please check:`,
   },
 };
 
@@ -223,8 +229,10 @@ async function convertFile(file, force = false) {
   const unparsedItemNos  = parseHeader(res.headers.get("X-Unparsed-Items"), false);
   // The list is capped server-side; the count is the true total.
   const unparsedCount    = parseInt(res.headers.get("X-Unparsed-Count") || "0", 10) || unparsedItemNos.length;
+  const uncertainItems   = parseHeader(res.headers.get("X-Uncertain-Items"), false);
+  const uncertainCount   = parseInt(res.headers.get("X-Uncertain-Count") || "0", 10) || uncertainItems.length;
   const blob             = await res.blob();
-  return { blob, qty, total, checked, preview, unparsedItemNos, unparsedCount };
+  return { blob, qty, total, checked, preview, unparsedItemNos, unparsedCount, uncertainItems, uncertainCount };
 }
 
 // ── App ─────────────────────────────────────────────────────────────────────
@@ -283,10 +291,12 @@ export default function App() {
       const xlsxName = file.name.replace(/\.[^.]+$/, "") + ".xlsx";
 
       try {
-        const { blob, qty, total, checked, preview, unparsedItemNos } = await convertFile(file);
+        const { blob, qty, total, checked, preview, unparsedItemNos, uncertainItems, uncertainCount } = await convertFile(file);
         // Single file: trigger immediate download
         if (pdfs.length === 1) triggerDownload(blob, xlsxName);
-        batch.push({ name: file.name, xlsxName, blob, qty, total, checked, preview, unparsedItemNos: unparsedItemNos || [], error: null, isPartial: false, file });
+        batch.push({ name: file.name, xlsxName, blob, qty, total, checked, preview,
+          unparsedItemNos: unparsedItemNos || [], uncertainItems: uncertainItems || [], uncertainCount: uncertainCount || 0,
+          error: null, isPartial: false, file });
       } catch (e) {
         if (e.isPartial) {
           // Validation mismatch — auto-download the export anyway so the team can continue,
@@ -776,6 +786,31 @@ function PartialWarning({ result, onForceDownload, t }) {
   );
 }
 
+// Lines whose quantity/price split could not be reconciled with the line total.
+// The invoice total still adds up, so validation passes and nothing else in the
+// UI would ever mention it — but the quantity is what gets declared to customs.
+function UncertainQtyWarning({ items, count, t }) {
+  if (!count) return null;
+  const list = items || [];
+  return (
+    <div style={{
+      background: T.panelDeep, border: `1px solid #5a4400`, borderRadius: 8,
+      padding: "0.6rem 0.85rem", marginBottom: "0.75rem",
+      display: "flex", alignItems: "flex-start", gap: "0.5rem",
+    }}>
+      <AlertTriangle size={13} color="#c78c00" style={{ marginTop: 2, flexShrink: 0 }} />
+      <p style={{ fontSize: "0.72rem", color: T.textDim, lineHeight: 1.5, margin: 0 }}>
+        {t.uncertainQtyNote(count)}{" "}
+        {list.length > 0 && (
+          <span style={{ fontFamily: "JetBrains Mono, monospace", color: T.textMute }}>
+            {list.slice(0, 12).join(", ")}{list.length > 12 ? ` +${list.length - 12}` : ""}
+          </span>
+        )}
+      </p>
+    </div>
+  );
+}
+
 function SilentGapWarning({ unparsedItemNos, t }) {
   if (!unparsedItemNos || unparsedItemNos.length === 0) return null;
   return (
@@ -835,6 +870,7 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
               <FileDown size={13} /> {t.redownload}
             </button>
             <SilentGapWarning unparsedItemNos={result.unparsedItemNos} t={t} />
+            <UncertainQtyWarning items={result.uncertainItems} count={result.uncertainCount} t={t} />
           </>
         )}
 
