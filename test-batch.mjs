@@ -199,7 +199,7 @@ function parseInvoiceText(text) {
       grossWeight = parseEuropeanNumber(tariffGrM[2]);
     } else {
       const rest   = block.slice(itemNoEnd);
-      const curIdx = rest.search(/(?:CHF|EUR|GBP|USD|CAD)/);
+      const curIdx = rest.search(/(?<![A-Z])(?:CHF|EUR|GBP|USD|CAD)(?![A-Z])/);
       const bareM  = /(\d{10})(?=\d)/.exec(curIdx > 0 ? rest.slice(0, curIdx) : rest);
       if (bareM) {
         tariffNo  = bareM[1];
