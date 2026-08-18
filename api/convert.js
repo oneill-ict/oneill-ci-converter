@@ -432,6 +432,10 @@ function parseInvoiceText(text) {
 
   invoice._validation = {
     valid: totalOk && qtyOk,
+    // `valid` alone is ambiguous: totalOk/qtyOk default to true when there is
+    // nothing to compare against. `checked` says whether a comparison actually
+    // happened, so the UI can distinguish "verified" from "not verified".
+    checked: expectedQty !== null || expectedTotal !== null,
     parsedQty, parsedTotal, expectedQty, expectedTotal,
     totalOk, qtyOk, repairs, missedRows,
     unparsedItemNos: [...new Map(unparsedItemNos.map(x => [x.itemNo, x])).values()],
@@ -902,6 +906,11 @@ export default async function handler(req, res) {
   // Expose validation stats so the frontend can show a summary
   res.setHeader("X-Validation-Qty",   String(invoice._validation?.parsedQty   ?? ""));
   res.setHeader("X-Validation-Total", String(invoice._validation?.parsedTotal ?? ""));
+  // Whether the totals were actually compared against the invoice footer.
+  // Without this the UI cannot tell a verified result from an unverified one.
+  res.setHeader("X-Validation-Checked",        v?.checked ? "1" : "0");
+  res.setHeader("X-Validation-Expected-Qty",   String(v?.expectedQty   ?? ""));
+  res.setHeader("X-Validation-Expected-Total", String(v?.expectedTotal ?? ""));
   // Expose unparsed item numbers even on success so the frontend can show a soft warning
   const unparsedNos = (v?.unparsedItemNos || []).map(r => r.itemNo);
   if (unparsedNos.length > 0) {

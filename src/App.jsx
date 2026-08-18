@@ -18,6 +18,7 @@ const i18n = {
     processSub:    "Factuurregels extraheren en Excel opbouwen",
     downloadStart: "Download gestart",
     validOk:       "Validatie geslaagd",
+    validUnchecked:"Niet gecontroleerd — factuurtotaal niet gevonden",
     validRows:     (q, t) => `${q} regels · CHF ${t}`,
     redownload:    "Opnieuw downloaden",
     newInvoice:    "Nieuwe factuur converteren",
@@ -69,6 +70,7 @@ const i18n = {
     processSub:    "Extracting invoice lines and building Excel",
     downloadStart: "Download started",
     validOk:       "Validation passed",
+    validUnchecked:"Not verified — invoice total not found",
     validRows:     (q, t) => `${q} lines · CHF ${t}`,
     redownload:    "Download again",
     newInvoice:    "Convert new invoice",
@@ -166,12 +168,14 @@ async function convertFile(file, force = false) {
 
   const qty              = parseInt(res.headers.get("X-Validation-Qty")    || "0", 10);
   const total            = parseFloat(res.headers.get("X-Validation-Total") || "0");
+  // "1" only when the totals were actually compared against the invoice footer.
+  const checked          = res.headers.get("X-Validation-Checked") === "1";
   const previewRaw       = res.headers.get("X-Preview");
   const preview          = previewRaw ? JSON.parse(decodeURIComponent(previewRaw)) : [];
   const unparsedRaw      = res.headers.get("X-Unparsed-Items");
   const unparsedItemNos  = unparsedRaw ? JSON.parse(unparsedRaw) : [];
   const blob             = await res.blob();
-  return { blob, qty, total, preview, unparsedItemNos };
+  return { blob, qty, total, checked, preview, unparsedItemNos };
 }
 
 // ── App ─────────────────────────────────────────────────────────────────────
@@ -215,10 +219,10 @@ export default function App() {
       const xlsxName = file.name.replace(/\.[^.]+$/, "") + ".xlsx";
 
       try {
-        const { blob, qty, total, preview, unparsedItemNos } = await convertFile(file);
+        const { blob, qty, total, checked, preview, unparsedItemNos } = await convertFile(file);
         // Single file: trigger immediate download
         if (pdfs.length === 1) triggerDownload(blob, xlsxName);
-        batch.push({ name: file.name, xlsxName, blob, qty, total, preview, unparsedItemNos: unparsedItemNos || [], error: null, isPartial: false, file });
+        batch.push({ name: file.name, xlsxName, blob, qty, total, checked, preview, unparsedItemNos: unparsedItemNos || [], error: null, isPartial: false, file });
       } catch (e) {
         if (e.isPartial) {
           // Validation mismatch — auto-download the export anyway so the team can continue,
@@ -267,8 +271,10 @@ export default function App() {
     try {
       const { blob, qty, total, preview } = await convertFile(r.file, true);
       triggerDownload(blob, r.xlsxName);
+      // A forced export is unverified by definition — the totals did not
+      // reconcile. Keep `checked: false` so the badge never claims otherwise.
       setResults(prev => prev.map(p => p === r
-        ? { ...p, blob, qty, total, preview, isPartial: false, forceLoading: false }
+        ? { ...p, blob, qty, total, preview, checked: false, isPartial: false, forceLoading: false }
         : p));
     } catch (e) {
       setResults(prev => prev.map(p => p === r
@@ -539,19 +545,28 @@ function PreviewTable({ rows, totalItems, t }) {
   );
 }
 
-function ValidationBadge({ qty, total, t }) {
+function ValidationBadge({ qty, total, checked, t }) {
   if (!qty) return null;
+  // Three states, not two. `checked === false` means the invoice footer total
+  // could not be read, so nothing was compared — claiming "passed" there would
+  // be a guarantee the converter cannot give.
+  const isChecked = checked !== false;
+  const accent    = isChecked ? T.good     : "#f59e0b";
+  const bg        = isChecked ? T.goodSoft : "#1a1200";
   return (
     <div style={{
-      background: T.goodSoft, border: `1px solid ${T.good}`, borderRadius: 10,
+      background: bg, border: `1px solid ${accent}`, borderRadius: 10,
       padding: "0.5rem 1rem", marginBottom: "0.75rem",
       display: "flex", alignItems: "center", justifyContent: "center", gap: "0.75rem",
+      flexWrap: "wrap",
     }}>
-      <CheckCircle2 size={16} color={T.good} />
+      {isChecked ? <CheckCircle2 size={16} color={accent} /> : <AlertTriangle size={16} color={accent} />}
       <span style={{ fontSize: "0.82rem", color: T.text, fontWeight: 600 }}>
         {t.validRows(qty, fmtCHF(total))}
       </span>
-      <span style={{ fontSize: "0.72rem", color: T.good }}>{t.validOk}</span>
+      <span style={{ fontSize: "0.72rem", color: accent }}>
+        {isChecked ? t.validOk : t.validUnchecked}
+      </span>
     </div>
   );
 }
@@ -692,7 +707,7 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
         {isOk && (
           <>
             <p style={{ fontWeight: 600, color: T.text, marginBottom: "0.75rem" }}>{t.downloadStart}</p>
-            <ValidationBadge qty={result.qty} total={result.total} t={t} />
+            <ValidationBadge qty={result.qty} total={result.total} checked={result.checked} t={t} />
             <p style={{ fontSize: "0.73rem", color: T.textMute, fontFamily: "JetBrains Mono, monospace", marginBottom: "0.75rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {result.xlsxName}
             </p>
