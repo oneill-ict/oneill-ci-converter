@@ -292,8 +292,15 @@ function parseInvoiceText(text) {
   // phantom row — reported as an unreadable line and listed in the missing-items
   // warning as item "12906134". Per-page "Goods total" subtotals can be followed
   // by real NOS items, so only the last occurrence is cut.
+  // ...but only when that region really is just the footer. The note above says
+  // NOS items can follow a per-page "Goods total"; trimming blind would drop them
+  // AND blind the unparsed-item scan that runs over itemsText, so the loss would
+  // be silent. A tariff-length digit run in the cut means a real line is there.
   const lastGoodsTotal = flatLower.lastIndexOf("goods total", itemsEnd < 0 ? undefined : itemsEnd);
-  if (lastGoodsTotal > itemsStart) itemsEnd = lastGoodsTotal;
+  if (lastGoodsTotal > itemsStart) {
+    const cut = flatText.slice(lastGoodsTotal, itemsEnd < 0 ? undefined : itemsEnd);
+    if (!/\d{10}/.test(cut)) itemsEnd = lastGoodsTotal;
+  }
   const itemsText  = itemsStart >= 0 && itemsEnd > itemsStart
     ? flatText.slice(itemsStart, itemsEnd)
     : itemsStart >= 0 ? flatText.slice(itemsStart) : flatText;
@@ -376,8 +383,14 @@ function parseInvoiceText(text) {
       tariffEnd   = tariffGrM.index + tariffGrM[0].length;
       grossWeight = parseEuropeanNumber(tariffGrM[2]);
     } else {
-      // Search past the item number so a long digit run in the code cannot match.
-      const bareM = /(\d{10})(?=\d)/.exec(block.slice(itemNoEnd));
+      // Search past the item number so a long digit run in the code cannot match,
+      // and stop at the first currency word. Without that upper bound the scan
+      // could run into an embedded next item's tariff, making this line inherit
+      // that item's tariff, quantity, price and total while the item itself was
+      // still spliced in separately and counted twice.
+      const rest    = block.slice(itemNoEnd);
+      const curIdx  = rest.search(/(?:CHF|EUR|GBP)/);
+      const bareM   = /(\d{10})(?=\d)/.exec(curIdx > 0 ? rest.slice(0, curIdx) : rest);
       if (bareM) {
         tariffNo  = bareM[1];
         tariffPos = itemNoEnd + bareM.index;
