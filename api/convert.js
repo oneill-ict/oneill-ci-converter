@@ -472,6 +472,21 @@ function parseInvoiceText(text) {
     qtyOk   = expectedQty  === null || parsedQty === expectedQty;
   }
 
+  // ── STEP 5 — Validate what actually ships ─────────────────────────────────
+  // The Excel's Total column is a formula (qty × price − discount), not the line
+  // total read from the PDF. Those diverge whenever a split does not reconcile
+  // exactly, so validating only the PDF-derived figure let the delivered file
+  // disagree with the invoice unnoticed — the converter reported "geslaagd"
+  // while shipping a workbook whose own grand total was 12 cents off.
+  for (const it of invoice.items) {
+    it.computedTotal = round2(it.quantity * it.pricePerPiece - it.discount);
+  }
+  const excelTotal = round2(invoice.items.reduce((s, i) => s + i.computedTotal, 0));
+  const driftLines = invoice.items
+    .filter(i => Math.abs(i.computedTotal - i.total) > 0.005)
+    .map(i => ({ itemNo: i.itemNo, item: i.item, stated: i.total, computed: i.computedTotal }));
+  const excelOk = expectedTotal === null || Math.abs(excelTotal - expectedTotal) < 0.10;
+
   // Find item numbers present in itemsText but absent from parsed results — diagnostic.
   // Groups: (1) 7-8 digit, (2) N-prefix, (3) 4digit+letter no-space, (4) 4digit space variant, (5) ONS-prefix
   const parsedItemNos = new Set(invoice.items.map(i => i.itemNo));
@@ -491,7 +506,10 @@ function parseInvoiceText(text) {
   }
 
   invoice._validation = {
-    valid: totalOk && qtyOk,
+    // excelOk is part of the verdict: a workbook whose own total disagrees with
+    // the invoice is a failed conversion, however well the parse went.
+    valid: totalOk && qtyOk && excelOk,
+    excelTotal, excelOk, driftLines,
     // `valid` alone is ambiguous: totalOk/qtyOk default to true when there is
     // nothing to compare against. `checked` says whether a comparison actually
     // happened, so the UI can distinguish "verified" from "not verified".
@@ -675,9 +693,11 @@ async function buildExcel(invoice) {
 
   const DATA_START = 19;
 
-  // Pre-calculate all totals (needed as formula results for Excel caching)
+  // Pre-calculate all totals (needed as formula results for Excel caching).
+  // Reuse the value validation already checked, so the number in the workbook
+  // and the number that was verified can never drift apart.
   invoice.items.forEach(item => {
-    item._total = round2(item.quantity * item.pricePerPiece - item.discount);
+    item._total = item.computedTotal ?? round2(item.quantity * item.pricePerPiece - item.discount);
   });
   const goodsTotalQty    = invoice.items.reduce((s, it) => s + it.quantity, 0);
   const goodsTotalAmount = round2(invoice.items.reduce((s, it) => s + it._total, 0));
@@ -994,6 +1014,9 @@ async function handleConvert(req, res) {
       missedRows:       v.missedRows,
       unparsedItemNos:  v.unparsedItemNos,
       uncertainLines:   v.uncertainLines,
+      excelTotal:       v.excelTotal,
+      excelOk:          v.excelOk,
+      driftLines:       v.driftLines,
     });
   }
 
@@ -1055,6 +1078,15 @@ async function handleConvert(req, res) {
   if (uncertain.length > 0) {
     res.setHeader("X-Uncertain-Count", String(uncertain.length));
     setSafeHeader(res, "X-Uncertain-Items", JSON.stringify(uncertain.slice(0, 40).map(r => r.itemNo)));
+  }
+  // Lines where the workbook's own total will differ from the invoice's stated
+  // line total, plus the resulting grand total, so the user can see the gap
+  // even on a forced export.
+  res.setHeader("X-Excel-Total", String(v?.excelTotal ?? ""));
+  const drift = v?.driftLines || [];
+  if (drift.length > 0) {
+    res.setHeader("X-Drift-Count", String(drift.length));
+    setSafeHeader(res, "X-Drift-Items", JSON.stringify(drift.slice(0, 40).map(r => r.itemNo)));
   }
   // First-10-rows preview so the frontend can show a table before confirming download
   const previewRows = invoice.items.slice(0, 10).map(it => ({

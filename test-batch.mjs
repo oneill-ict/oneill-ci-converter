@@ -268,11 +268,21 @@ function parseInvoiceText(text) {
     qtyOk   = expectedQty  === null || parsedQty === expectedQty;
   }
 
+  // What the Excel will actually contain — mirrors STEP 5 in api/convert.js.
+  for (const it of items) {
+    it.computedTotal = round2(it.quantity * it.pricePerPiece - it.discount);
+  }
+  const excelTotal = round2(items.reduce((s, i) => s + i.computedTotal, 0));
+  const driftLines = items
+    .filter(i => Math.abs(i.computedTotal - i.total) > 0.005)
+    .map(i => i.itemNo);
+  const excelOk = expectedTotal === null || Math.abs(excelTotal - expectedTotal) < 0.10;
+
   return {
     currency, items, missedRows,
     expectedQty, expectedTotal, parsedQty, parsedTotal,
-    totalOk, qtyOk,
-    valid: totalOk && qtyOk,
+    totalOk, qtyOk, excelOk, excelTotal, driftLines,
+    valid: totalOk && qtyOk && excelOk,
     repairs,
     uncertainLines: items.filter(i => i._qtyUncertain).map(i => i.itemNo),
   };
@@ -328,11 +338,20 @@ for (const pdfPath of pdfs) {
       if (r.uncertainLines.length > 0) {
         console.log(`         ⚠ guessed quantity on ${r.uncertainLines.length} line(s): ${r.uncertainLines.slice(0, 8).join(", ")}`);
       }
+      // Excel total agrees with the invoice, but individual lines may still
+      // recompute to a different figure than the PDF states.
+      if (r.driftLines.length > 0) {
+        console.log(`         ⚠ excel total ${r.excelTotal} vs stated ${r.parsedTotal}; drifting line(s): ${r.driftLines.slice(0, 8).join(", ")}`);
+      }
       results.pass.push(label);
     } else {
       const dQty   = r.expectedQty   != null ? ` Δqty=${r.parsedQty - r.expectedQty}` : "";
       const dTotal = r.expectedTotal != null ? ` Δtotal=${round2(r.parsedTotal - r.expectedTotal)}` : "";
-      console.log(`  ❌ FAIL  ${label}  qty=${r.parsedQty}/${r.expectedQty}${dQty} total=${r.parsedTotal}/${r.expectedTotal}${dTotal} ${r.currency}`);
+      const why = [!r.qtyOk && "qty", !r.totalOk && "total", !r.excelOk && "EXCEL"].filter(Boolean).join("+");
+      console.log(`  ❌ FAIL  ${label}  [${why}]  qty=${r.parsedQty}/${r.expectedQty}${dQty} total=${r.parsedTotal}/${r.expectedTotal}${dTotal} ${r.currency}`);
+      if (!r.excelOk) {
+        console.log(`         excel total ${r.excelTotal} vs invoice ${r.expectedTotal}  (drifting lines: ${r.driftLines.join(", ")})`);
+      }
       if (r.missedRows.length > 0) {
         for (const mr of r.missedRows.slice(0, 5)) {
           console.log(`         missed ${mr.itemNo}: ${mr.reason} — "${mr.context.slice(0, 100)}"`);
