@@ -1070,7 +1070,10 @@ async function handleConvert(req, res) {
       parsedTotal:      v.parsedTotal,
       expectedTotal:    v.expectedTotal,
       missedRows:       v.missedRows,
-      unparsedItemNos:  v.unparsedItemNos,
+      // Bare item numbers, the same shape the X-Unparsed-Items header sends on
+      // the success path. It used to send {itemNo, context} objects here, so a
+      // component that worked on one path rendered "[object Object]" on the other.
+      unparsedItemNos:  (v.unparsedItemNos || []).map(r => r.itemNo),
       uncertainLines:   v.uncertainLines,
       excelTotal:       v.excelTotal,
       excelOk:          v.excelOk,
