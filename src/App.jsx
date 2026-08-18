@@ -44,6 +44,23 @@ const i18n = {
     failedCount:   (n) => `${n} mislukt`,
     warnCount:     (n) => `${n} met waarschuwing`,
     downloadZip:   "Download alle als ZIP",
+    shortBy:       (n) => n > 0 ? `${n} te weinig` : `${-n} te veel`,
+    zipSuffixPartial:   "(ONVOLLEDIG)",
+    zipSuffixUnchecked: "(NIET GECONTROLEERD)",
+    zipReadmeName: "LEES-DIT-EERST.txt",
+    zipReadmeBody: (names) =>
+      "LET OP\r\n\r\n" +
+      "De volgende bestanden in deze ZIP zijn NIET goedgekeurd door de converter.\r\n" +
+      "Controleer ze handmatig voordat je ze voor de douane gebruikt:\r\n\r\n" +
+      names.map(n => "  - " + n).join("\r\n") + "\r\n\r\n" +
+      "(ONVOLLEDIG)          = aantal of totaal komt niet overeen met de factuur\r\n" +
+      "(NIET GECONTROLEERD)  = het factuurtotaal kon niet worden gelezen\r\n",
+    noPdfsFound:   (n) => n === 1
+      ? "Dat bestand is geen PDF. Sleep een Commercial Invoice in PDF-formaat."
+      : `Geen van die ${n} bestanden is een PDF. Sleep Commercial Invoices in PDF-formaat.`,
+    skippedNonPdf: (n) => n === 1
+      ? "1 bestand overgeslagen: geen PDF."
+      : `${n} bestanden overgeslagen: geen PDF.`,
     recentTitle:   "Recent",
     clearHistory:  "Wissen",
     rows:          "regels",
@@ -100,6 +117,23 @@ const i18n = {
     failedCount:   (n) => `${n} failed`,
     warnCount:     (n) => `${n} with warning`,
     downloadZip:   "Download all as ZIP",
+    shortBy:       (n) => n > 0 ? `${n} short` : `${-n} too many`,
+    zipSuffixPartial:   "(INCOMPLETE)",
+    zipSuffixUnchecked: "(NOT VERIFIED)",
+    zipReadmeName: "READ-ME-FIRST.txt",
+    zipReadmeBody: (names) =>
+      "WARNING\r\n\r\n" +
+      "The following files in this ZIP were NOT approved by the converter.\r\n" +
+      "Check them by hand before using them for customs:\r\n\r\n" +
+      names.map(n => "  - " + n).join("\r\n") + "\r\n\r\n" +
+      "(INCOMPLETE)    = quantity or total does not match the invoice\r\n" +
+      "(NOT VERIFIED)  = the invoice total could not be read\r\n",
+    noPdfsFound:   (n) => n === 1
+      ? "That file is not a PDF. Drop a Commercial Invoice in PDF format."
+      : `None of those ${n} files is a PDF. Drop Commercial Invoices in PDF format.`,
+    skippedNonPdf: (n) => n === 1
+      ? "1 file skipped: not a PDF."
+      : `${n} files skipped: not a PDF.`,
     recentTitle:   "Recent",
     clearHistory:  "Clear",
     rows:          "lines",
@@ -210,6 +244,7 @@ export default function App() {
   const [progress, setProgress] = useState({ i: 0, total: 0, name: "" });
   const [results, setResults]   = useState([]);
   const [dragging, setDragging] = useState(false);
+  const [notice, setNotice]     = useState(null);   // files dropped that were not PDFs
   const [history, setHistory]   = useState(loadHistory);
   const [lang, setLang]         = useState(() => localStorage.getItem("oneill_lang") || "NL");
   const t = i18n[lang];
@@ -221,8 +256,22 @@ export default function App() {
   const inputRef = useRef(null);
 
   const runBatch = useCallback(async (files) => {
-    const pdfs = [...files].filter(f => f.type === "application/pdf");
-    if (!pdfs.length) return;
+    // Files from network shares and mail clients often arrive with an empty
+    // MIME type, so fall back to the extension. Previously those were dropped
+    // without a word, and the "N of M processed" count hid the gap.
+    const all     = [...files];
+    const pdfs    = all.filter(f => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+    const skipped = all.length - pdfs.length;
+
+    if (!pdfs.length) {
+      // Return before setPhase left the previous result on screen, complete
+      // with a live download button belonging to a different invoice.
+      setResults([]);
+      setPhase("idle");
+      setNotice(t.noPdfsFound(all.length));
+      return;
+    }
+    setNotice(skipped > 0 ? t.skippedNonPdf(skipped) : null);
 
     setPhase("processing");
     setResults([]);
@@ -277,7 +326,7 @@ export default function App() {
         return updated;
       });
     }
-  }, []);
+  }, [t]);
 
   // Force-download a partial result. If blob is already stored (auto-downloaded), just re-trigger.
   const downloadForce = useCallback(async (r) => {
@@ -302,12 +351,27 @@ export default function App() {
 
   const downloadZip = async () => {
     const zip = new JSZip();
-    for (const r of results) if (r.blob) zip.file(r.xlsxName, r.blob);
+    // Once the ZIP leaves the browser the on-screen warning is gone, so an
+    // incomplete or unverified export has to carry its status in the filename.
+    // Previously partials were bundled in under the same name as clean ones.
+    const flagged = [];
+    for (const r of results) {
+      if (!r.blob) continue;
+      const suffix = r.isPartial       ? t.zipSuffixPartial
+                   : r.checked === false ? t.zipSuffixUnchecked
+                   : "";
+      const name = suffix
+        ? r.xlsxName.replace(/\.xlsx$/i, "") + ` ${suffix}.xlsx`
+        : r.xlsxName;
+      if (suffix) flagged.push(name);
+      zip.file(name, r.blob);
+    }
+    if (flagged.length) zip.file(t.zipReadmeName, t.zipReadmeBody(flagged));
     const zipBlob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
     triggerDownload(zipBlob, "commercial-invoices.zip");
   };
 
-  const reset = () => { setPhase("idle"); setResults([]); setProgress({ i: 0, total: 0, name: "" }); };
+  const reset = () => { setPhase("idle"); setResults([]); setNotice(null); setProgress({ i: 0, total: 0, name: "" }); };
   const clearHistory = () => { saveHistory([]); setHistory([]); };
 
   const onFileChange = (e) => { if (e.target.files?.length) runBatch(e.target.files); e.target.value = ""; };
@@ -322,7 +386,11 @@ export default function App() {
   const maxWidth     = phase === "done" && isBatch ? 600 : 500;
 
   return (
-    <div style={{ minHeight: "100vh", background: T.bgGradient, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "2rem", position: "relative", overflow: "hidden" }}>
+    // "safe center" keeps short content centred but stops centring once the
+    // content is taller than the viewport — plain `center` pushes the top out
+    // of reach, and `overflow: hidden` made it unscrollable, so a failed file
+    // at the bottom of a long batch could be clipped away entirely.
+    <div style={{ minHeight: "100vh", background: T.bgGradient, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "safe center", padding: "2rem", position: "relative", overflowX: "hidden", overflowY: "auto" }}>
       <Wave />
       <div style={{ marginBottom: "2.5rem", textAlign: "center", animation: "fadeIn 0.3s ease-out", position: "relative" }}>
         <div style={{ fontFamily: "Fraunces, serif", fontSize: "1.5rem", fontWeight: 700, color: T.text, letterSpacing: "-0.02em", marginBottom: "0.25rem" }}>O'Neill</div>
@@ -353,6 +421,17 @@ export default function App() {
         }}
         onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}
       >
+        {notice && (
+          <div role="status" style={{
+            background: "#1a1200", border: "1px solid #b86e00", borderRadius: 10,
+            padding: "0.55rem 0.9rem", marginBottom: "1rem",
+            display: "flex", alignItems: "center", gap: "0.5rem",
+            fontSize: "0.76rem", color: "#f59e0b",
+          }}>
+            <AlertTriangle size={14} color="#f59e0b" style={{ flexShrink: 0 }} />
+            <span>{notice}</span>
+          </div>
+        )}
         {phase === "idle"       && <UploadZone dragging={dragging} onPickFile={() => inputRef.current?.click()} history={history} onClearHistory={clearHistory} t={t} />}
         {phase === "processing" && <ProcessingState progress={progress} t={t} />}
         {phase === "done" && !isBatch && (
@@ -783,6 +862,28 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
   );
 }
 
+// Compact version of PartialWarning's item list, for a batch row.
+function BatchMissingItems({ result, t }) {
+  const unparsed = (result.unparsedItemNos || []).map(r => typeof r === "string" ? r : r.itemNo);
+  const missed   = result.missedRows || [];
+  const named    = unparsed.length > 0 ? unparsed : missed.filter(r => r.itemNo !== "???").map(r => r.itemNo);
+  const unnamed  = missed.filter(r => r.itemNo === "???").length;
+  if (!named.length && !unnamed) return null;
+
+  const shown = named.slice(0, 8);
+  const rest  = named.length - shown.length;
+  return (
+    <div style={{ fontSize: "0.66rem", color: T.textDim, marginTop: "0.15rem", marginLeft: 17, lineHeight: 1.5 }}>
+      {shown.length > 0 && (
+        <div style={{ fontFamily: "JetBrains Mono, monospace", wordBreak: "break-word" }}>
+          {t.missedItemsLabel}: {shown.join(", ")}{rest > 0 ? ` +${rest}` : ""}
+        </div>
+      )}
+      {unnamed > 0 && <div style={{ color: "#f59e0b" }}>{t.unreadableRows(unnamed)}</div>}
+    </div>
+  );
+}
+
 function BatchDoneState({ results, successCount, errorCount, partialCount, onDownloadZip, onDownloadSingle, onForceDownload, onReset, t }) {
   const allOk = errorCount === 0 && partialCount === 0;
   return (
@@ -810,7 +911,12 @@ function BatchDoneState({ results, successCount, errorCount, partialCount, onDow
         )}
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "1.5rem" }}>
+      <div style={{
+        display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "1.5rem",
+        // Long batches get their own scroll area so the summary and the reset
+        // button below stay reachable no matter how many files were dropped.
+        maxHeight: "min(55vh, 560px)", overflowY: "auto", overflowX: "hidden",
+      }}>
         {results.map((r, i) => (
           <div key={i}>
             <div style={{
@@ -830,13 +936,23 @@ function BatchDoneState({ results, successCount, errorCount, partialCount, onDow
                 </div>
                 {r.error && <p style={{ fontSize: "0.7rem", color: T.bad,   marginTop: "0.2rem", marginLeft: 17 }}>{r.error}</p>}
                 {r.isPartial && (
-                  <p style={{ fontSize: "0.7rem", color: "#f59e0b", marginTop: "0.2rem", marginLeft: 17 }}>
-                    {t.mismatchFound} {r.qty} / {r.expectedQty} {t.rows}
-                  </p>
+                  <>
+                    <p style={{ fontSize: "0.7rem", color: "#f59e0b", marginTop: "0.2rem", marginLeft: 17 }}>
+                      {t.mismatchFound} {r.qty} / {r.expectedQty} {t.rows}
+                      {r.expectedQty != null && ` (${t.shortBy(r.expectedQty - r.qty)})`}
+                    </p>
+                    {/* The missing item numbers were held in state but never rendered
+                        in batch mode, forcing staff to re-upload the file alone. */}
+                    <BatchMissingItems result={r} t={t} />
+                  </>
                 )}
                 {!r.error && !r.isPartial && r.qty && (
-                  <p style={{ fontSize: "0.7rem", color: T.good, marginTop: "0.2rem", marginLeft: 17 }}>
-                    ✓ {r.qty} {t.rows} · CHF {fmtCHF(r.total)}
+                  <p style={{
+                    fontSize: "0.7rem", marginTop: "0.2rem", marginLeft: 17,
+                    color: r.checked === false ? "#f59e0b" : T.good,
+                  }}>
+                    {r.checked === false ? "⚠" : "✓"} {r.qty} {t.rows} · CHF {fmtCHF(r.total)}
+                    {r.checked === false && ` · ${t.validUnchecked}`}
                   </p>
                 )}
               </div>
