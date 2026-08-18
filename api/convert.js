@@ -546,20 +546,13 @@ function parseInvoiceText(text) {
     qtyOk   = expectedQty  === null || parsedQty === expectedQty;
   }
 
-  // ── STEP 5 — Validate what actually ships ─────────────────────────────────
-  // The Excel's Total column is a formula (qty × price − discount), not the line
-  // total read from the PDF. Those diverge whenever a split does not reconcile
-  // exactly, so validating only the PDF-derived figure let the delivered file
-  // disagree with the invoice unnoticed — the converter reported "geslaagd"
-  // while shipping a workbook whose own grand total was 12 cents off.
-  for (const it of invoice.items) {
-    it.computedTotal = round2(it.quantity * it.pricePerPiece - it.discount);
-  }
-  const excelTotal = round2(invoice.items.reduce((s, i) => s + i.computedTotal, 0));
-  const driftLines = invoice.items
-    .filter(i => Math.abs(i.computedTotal - i.total) > 0.005)
-    .map(i => ({ itemNo: i.itemNo, item: i.item, stated: i.total, computed: i.computedTotal }));
-  const excelOk = expectedTotal === null || Math.abs(excelTotal - expectedTotal) < 0.10;
+  // No separate "does the workbook agree with the invoice" check any more: the
+  // Total column now carries item.total itself, so the shipped sum IS parsedTotal
+  // and totalOk already covers it. The old check existed because the workbook
+  // recomputed the line from a rounded unit price and could drift a cent per
+  // line; carrying the invoice's figure removes the cause rather than watching
+  // for the symptom. A genuinely wrong qty/price split is still caught by the
+  // uncertain-quantity check, which has a tighter tolerance than that rounding.
 
   // Lines with no per-line gross weight. Gross weight is a customs-declared
   // field, so an unknown must be visible rather than shipped as 0.
@@ -586,10 +579,8 @@ function parseInvoiceText(text) {
   }
 
   invoice._validation = {
-    // excelOk is part of the verdict: a workbook whose own total disagrees with
-    // the invoice is a failed conversion, however well the parse went.
-    valid: totalOk && qtyOk && excelOk,
-    excelTotal, excelOk, driftLines, noWeightLines,
+    valid: totalOk && qtyOk,
+    noWeightLines,
     // `valid` alone is ambiguous: totalOk/qtyOk default to true when there is
     // nothing to compare against. `checked` says whether a comparison actually
     // happened, so the UI can distinguish "verified" from "not verified".
@@ -773,12 +764,9 @@ async function buildExcel(invoice) {
 
   const DATA_START = 19;
 
-  // Pre-calculate all totals (needed as formula results for Excel caching).
-  // Reuse the value validation already checked, so the number in the workbook
-  // and the number that was verified can never drift apart.
-  invoice.items.forEach(item => {
-    item._total = item.computedTotal ?? round2(item.quantity * item.pricePerPiece - item.discount);
-  });
+  // The workbook carries the invoice's own line totals, so the number written
+  // and the number validated are the same by construction rather than by check.
+  invoice.items.forEach(item => { item._total = item.total; });
   const goodsTotalQty    = invoice.items.reduce((s, it) => s + it.quantity, 0);
   const goodsTotalAmount = round2(invoice.items.reduce((s, it) => s + it._total, 0));
   const invoiceDiscount  = invoice.invoiceDiscount || 0;
@@ -822,7 +810,15 @@ async function buildExcel(invoice) {
 
     // Total — formula with pre-calculated result so cache is populated
     const tc     = ws.getCell(r, 11);
-    tc.value     = { formula: `H${r}*I${r}-J${r}`, result: item._total };
+    // The invoice's own line total, as a value. It used to be the formula
+    // H*I-J, which cannot reproduce the printed total whenever the unit price is
+    // rounded to two decimals: 3 x 19,22 gives 57,66 where the invoice says
+    // 57,65, because the real price is 19,2166... Across 172 lines those cents
+    // accumulated and the workbook ended up 12 cents away from the invoice.
+    // A customs document has to reproduce the invoice, so quantity, price and
+    // total are now all carried exactly as printed. The aggregations below stay
+    // formulas — that is where a reader wants to trace a sum.
+    tc.value     = item.total;
     tc.numFmt    = "#,##0.00";
     tc.font      = hFont;
     tc.alignment = { horizontal: "right" };
@@ -1112,9 +1108,6 @@ async function handleConvert(req, res) {
       // component that worked on one path rendered "[object Object]" on the other.
       unparsedItemNos:  (v.unparsedItemNos || []).map(r => r.itemNo),
       uncertainLines:   v.uncertainLines,
-      excelTotal:       v.excelTotal,
-      excelOk:          v.excelOk,
-      driftLines:       v.driftLines,
       noWeightLines:    v.noWeightLines,
       // Which axis actually failed. Without these the client could only guess,
       // and it guessed "quantity" — the heading said the piece count did not
@@ -1185,15 +1178,6 @@ async function handleConvert(req, res) {
   if (uncertain.length > 0) {
     res.setHeader("X-Uncertain-Count", String(uncertain.length));
     setSafeHeader(res, "X-Uncertain-Items", JSON.stringify(uncertain.slice(0, 40).map(r => r.itemNo)));
-  }
-  // Lines where the workbook's own total will differ from the invoice's stated
-  // line total, plus the resulting grand total, so the user can see the gap
-  // even on a forced export.
-  res.setHeader("X-Excel-Total", String(v?.excelTotal ?? ""));
-  const drift = v?.driftLines || [];
-  if (drift.length > 0) {
-    res.setHeader("X-Drift-Count", String(drift.length));
-    setSafeHeader(res, "X-Drift-Items", JSON.stringify(drift.slice(0, 40).map(r => r.itemNo)));
   }
   const noWeight = v?.noWeightLines || [];
   if (noWeight.length > 0) {

@@ -27,12 +27,10 @@ const i18n = {
     newInvoices:   "Nieuwe facturen",
     checkResults:  "Controleer de resultaten",
     mismatchTitle: (axis) =>
-      axis === "excel"   ? "Het Excel telt niet op tot het factuurbedrag"
-    : axis === "total"   ? "Bedrag komt niet overeen met de factuur"
+      axis === "total"   ? "Bedrag komt niet overeen met de factuur"
     : axis === "unknown" ? "Controle mislukt — reden onbekend"
     :                      "Aantal stuks komt niet overeen",
-    fromTheExcel:  "(zoals het Excel het optelt)",
-    mismatchFound: "Gevonden:",
+   mismatchFound: "Gevonden:",
     mismatchExp:   "Verwacht:",
     missedItemsLabel: "Ontbrekend in export",
     unreadableRows: (n) => n === 1
@@ -61,8 +59,7 @@ const i18n = {
     trustSuffix: {
       partial:   "(ONVOLLEDIG)",
       unchecked: "(NIET GECONTROLEERD)",
-      drift:     "(BEDRAG WIJKT AF)",
-      noweight:  "(GEWICHT ONTBREEKT)",
+     noweight:  "(GEWICHT ONTBREEKT)",
       uncertain: "(AANTAL GESCHAT)",
       gaps:      "(REGELS ONTBREKEN)",
       degraded:  "(NIET GECONTROLEERD)",
@@ -71,8 +68,7 @@ const i18n = {
     trustReason: {
       partial:   "aantal of totaal komt niet overeen met de factuur",
       unchecked: "het factuurtotaal kon niet worden gelezen",
-      drift:     "het Excel telt niet op tot het bedrag op de factuur",
-      noweight:  "bij een of meer regels ontbreekt het brutogewicht",
+     noweight:  "bij een of meer regels ontbreekt het brutogewicht",
       uncertain: "bij een of meer regels is het aantal geschat",
       gaps:      "een of meer artikelnummers uit de PDF ontbreken",
       degraded:  "de controlegegevens konden niet worden uitgelezen",
@@ -117,8 +113,6 @@ const i18n = {
     noWeightNote: (n) => n === 1
       ? "Let op: bij 1 regel staat geen brutogewicht op de factuur. Die cel blijft leeg in het Excel — vul hem handmatig aan:"
       : `Let op: bij ${n} regels staat geen brutogewicht op de factuur. Die cellen blijven leeg in het Excel — vul ze handmatig aan:`,
-    driftNote: (n, excel, stated) =>
-      `Let op: het Excel telt op tot CHF ${excel}, de factuur zegt CHF ${stated}. Dat komt door ${n} regel${n === 1 ? "" : "s"} waar aantal × prijs niet exact het regeltotaal oplevert:`,
   },
   EN: {
     title:         "Commercial Invoice Converter",
@@ -142,12 +136,10 @@ const i18n = {
     newInvoices:   "New invoices",
     checkResults:  "Check the results",
     mismatchTitle: (axis) =>
-      axis === "excel"   ? "The Excel does not add up to the invoice amount"
-    : axis === "total"   ? "Amount does not match the invoice"
+      axis === "total"   ? "Amount does not match the invoice"
     : axis === "unknown" ? "Validation failed — reason unknown"
     :                      "Piece count mismatch",
-    fromTheExcel:  "(as the Excel adds up)",
-    mismatchFound: "Found:",
+   mismatchFound: "Found:",
     mismatchExp:   "Expected:",
     missedItemsLabel: "Missing from export",
     unreadableRows: (n) => n === 1
@@ -173,8 +165,7 @@ const i18n = {
     trustSuffix: {
       partial:   "(INCOMPLETE)",
       unchecked: "(NOT VERIFIED)",
-      drift:     "(AMOUNT DIFFERS)",
-      noweight:  "(WEIGHT MISSING)",
+     noweight:  "(WEIGHT MISSING)",
       uncertain: "(QUANTITY ESTIMATED)",
       gaps:      "(LINES MISSING)",
       degraded:  "(NOT VERIFIED)",
@@ -183,8 +174,7 @@ const i18n = {
     trustReason: {
       partial:   "quantity or total does not match the invoice",
       unchecked: "the invoice total could not be read",
-      drift:     "the Excel does not add up to the amount on the invoice",
-      noweight:  "the gross weight is missing on one or more lines",
+     noweight:  "the gross weight is missing on one or more lines",
       uncertain: "the quantity on one or more lines is an estimate",
       gaps:      "one or more item numbers from the PDF are missing",
       degraded:  "the validation data could not be read",
@@ -229,8 +219,6 @@ const i18n = {
     noWeightNote: (n) => n === 1
       ? "Note: 1 line has no gross weight on the invoice. That cell is left empty in the Excel — fill it in by hand:"
       : `Note: ${n} lines have no gross weight on the invoice. Those cells are left empty in the Excel — fill them in by hand:`,
-    driftNote: (n, excel, stated) =>
-      `Note: the Excel adds up to CHF ${excel}, the invoice says CHF ${stated}. This comes from ${n} line${n === 1 ? "" : "s"} where quantity × price does not reproduce the stated line total exactly:`,
   },
 };
 
@@ -287,13 +275,10 @@ async function convertFile(file, force = false) {
       // shape it got. Three consumers each guessed; one of them guessed wrong.
       e.unparsedItemNos  = (err.unparsedItemNos || []).map(r => typeof r === "string" ? r : r.itemNo);
       e.uncertainLines   = err.uncertainLines   || [];
-      e.driftLines       = err.driftLines       || [];
       e.noWeightLines    = err.noWeightLines    || [];
-      e.excelTotal       = err.excelTotal;
       // Which axis failed, straight from the server rather than inferred.
       e.qtyOk            = err.qtyOk;
       e.totalOk          = err.totalOk;
-      e.excelOk          = err.excelOk;
       throw e;
     }
     throw new Error(err.error || `HTTP ${res.status}`);
@@ -323,11 +308,6 @@ async function convertFile(file, force = false) {
   const unparsedCount    = parseInt(res.headers.get("X-Unparsed-Count") || "0", 10) || unparsedItemNos.length;
   const uncertainItems   = parseHeader(res.headers.get("X-Uncertain-Items"), false);
   const uncertainCount   = parseInt(res.headers.get("X-Uncertain-Count") || "0", 10) || uncertainItems.length;
-  // The workbook's own total, which can differ from the line totals stated on
-  // the invoice when a qty/price split does not reconcile exactly.
-  const excelTotal       = parseFloat(res.headers.get("X-Excel-Total") || "0");
-  const driftItems       = parseHeader(res.headers.get("X-Drift-Items"), false);
-  const driftCount       = parseInt(res.headers.get("X-Drift-Count") || "0", 10) || driftItems.length;
   // Lines with no gross weight — a customs-declared field left blank.
   const noWeightItems    = parseHeader(res.headers.get("X-NoWeight-Items"), false);
   const noWeightCount    = parseInt(res.headers.get("X-NoWeight-Count") || "0", 10) || noWeightItems.length;
@@ -341,7 +321,7 @@ async function convertFile(file, force = false) {
   if (!preview.length && qty > 0) degraded = true;
   const blob             = await res.blob();
   return { blob, qty, total, checked, qtyChecked, totalChecked, lineCount, preview, degraded,
-    unparsedItemNos, unparsedCount, uncertainItems, uncertainCount, excelTotal, driftItems, driftCount,
+    unparsedItemNos, unparsedCount, uncertainItems, uncertainCount,
     noWeightItems, noWeightCount };
 }
 
@@ -421,7 +401,7 @@ export default function App() {
         const c = await convertFile(file);
         const row = { name: file.name, xlsxName, ...c,
           unparsedItemNos: c.unparsedItemNos || [], uncertainItems: c.uncertainItems || [],
-          uncertainCount: c.uncertainCount || 0, driftItems: c.driftItems || [], driftCount: c.driftCount || 0,
+          uncertainCount: c.uncertainCount || 0,
           error: null, isPartial: false, file };
         // Single file: trigger immediate download, under the status-carrying name
         if (pdfs.length === 1) triggerDownload(row.blob, exportNameFor(row, t));
@@ -440,12 +420,9 @@ export default function App() {
             unparsedCount: (e.unparsedItemNos || []).length,
             uncertainItems: (e.uncertainLines || []).map(x => x.itemNo),
             uncertainCount: (e.uncertainLines || []).length,
-            driftItems: (e.driftLines || []).map(x => x.itemNo),
-            driftCount: (e.driftLines || []).length,
             noWeightItems: e.noWeightLines || [],
             noWeightCount: (e.noWeightLines || []).length,
-            excelTotal: e.excelTotal,
-            qtyOk: e.qtyOk, totalOk: e.totalOk, excelOk: e.excelOk,
+            qtyOk: e.qtyOk, totalOk: e.totalOk,
             preview: [], error: null, isPartial: true, file,
           };
           try {
@@ -652,15 +629,14 @@ export default function App() {
 // each looking at a different mix of isPartial / checked / qty / uncertainCount.
 // They disagreed: the same file could be amber in the badge, green in the
 // history and unlabelled in the ZIP. Everything now routes through here.
-const TRUST_ORDER = ["error", "partial", "unchecked", "drift", "noweight", "uncertain", "gaps", "degraded", "nodata"];
+const TRUST_ORDER = ["error", "partial", "unchecked", "noweight", "uncertain", "gaps", "degraded", "nodata"];
 
 function trustOf(r) {
   if (!r)                     return { ok: false, kind: "error" };
   if (r.error)                return { ok: false, kind: "error" };
   if (r.isPartial)            return { ok: false, kind: "partial" };
   if (r.checked === false)    return { ok: false, kind: "unchecked" };
-  if (r.driftCount > 0)       return { ok: false, kind: "drift" };
-  if (r.noWeightCount > 0)    return { ok: false, kind: "noweight" };
+ if (r.noWeightCount > 0)    return { ok: false, kind: "noweight" };
   if (r.uncertainCount > 0)   return { ok: false, kind: "uncertain" };
   if (r.unparsedCount > 0)    return { ok: false, kind: "gaps" };
   // Diagnostics unreadable: the absence of warnings proves nothing here.
@@ -677,9 +653,8 @@ function trustOf(r) {
 // bundle against a newer server, say); "unknown" avoids asserting a reason.
 function rowAxis(r) {
   if (r.qtyOk   === false) return "qty";
-  if (r.excelOk === false) return "excel";
-  if (r.totalOk === false) return "total";
-  return r.qtyOk === undefined && r.excelOk === undefined && r.totalOk === undefined
+ if (r.totalOk === false) return "total";
+  return r.qtyOk === undefined && r.totalOk === undefined
     ? "unknown" : "qty";
 }
 
@@ -690,7 +665,7 @@ function rowAxis(r) {
 // reported 2 cents. And on a total-only failure it quoted a figure that appears
 // in no delivered file at all.
 function rowTotal(r) {
-  return r.excelTotal != null ? r.excelTotal : r.total;
+  return r.total;
 }
 
 function exportNameFor(r, t) {
@@ -953,8 +928,7 @@ function PartialWarning({ result, onForceDownload, t }) {
         {t.mismatchFound} <strong style={{ color: T.text }}>
           {result.qty} {t.rows} · {fmtCHF(shownTotal)}
         </strong>
-        {result.excelTotal != null && <span style={{ color: T.textMute }}> {t.fromTheExcel}</span>}
-        <br />
+       <br />
         {t.mismatchExp} <strong style={{ color: T.text }}>{result.expectedQty} {t.rows} · {fmtCHF(result.expectedTotal)}</strong>
         {(result.expectedQty != null || result.expectedTotal != null) && (
           <><br />
@@ -1067,30 +1041,11 @@ function UncertainQtyWarning({ items, count, t }) {
   );
 }
 
-// The workbook recomputes each line as qty × price − discount, which can differ
-// from the total the invoice states for that line. Without this the delivered
-// file could disagree with the invoice and nothing would say so.
-function ExcelDriftWarning({ result, t }) {
-  if (!result.driftCount) return null;
-  const items = result.driftItems || [];
-  return (
-    <div style={{
-      background: T.panelDeep, border: `1px solid #5a4400`, borderRadius: 8,
-      padding: "0.6rem 0.85rem", marginBottom: "0.75rem",
-      display: "flex", alignItems: "flex-start", gap: "0.5rem",
-    }}>
-      <AlertTriangle size={13} color="#c78c00" style={{ marginTop: 2, flexShrink: 0 }} />
-      <p style={{ fontSize: "0.72rem", color: T.textDim, lineHeight: 1.5, margin: 0 }}>
-        {t.driftNote(result.driftCount, fmtCHF(result.excelTotal), fmtCHF(result.total))}{" "}
-        {items.length > 0 && (
-          <span style={{ fontFamily: "JetBrains Mono, monospace", color: T.textMute }}>
-            {items.slice(0, 12).join(", ")}{items.length > 12 ? ` +${items.length - 12}` : ""}
-          </span>
-        )}
-      </p>
-    </div>
-  );
-}
+// ExcelDriftWarning lived here. It reported the workbook disagreeing with the
+// invoice, which happened because the Total column recomputed each line from a
+// unit price rounded to two decimals. The workbook now carries the invoice's own
+// line totals, so there is nothing left to disagree — the warning went away with
+// its cause rather than being suppressed.
 
 // The diagnostic headers were unreadable. Say so: an empty list would otherwise
 // read as "nothing to report" — the same appearance as a clean conversion.
@@ -1119,7 +1074,6 @@ function ResultWarnings({ result, t }) {
       <DegradedWarning result={result} t={t} />
       <SilentGapWarning unparsedItemNos={result.unparsedItemNos} count={result.unparsedCount} t={t} />
       <UncertainQtyWarning items={result.uncertainItems} count={result.uncertainCount} t={t} />
-      <ExcelDriftWarning result={result} t={t} />
       <NoWeightWarning result={result} t={t} />
     </>
   );
