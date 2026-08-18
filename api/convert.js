@@ -274,7 +274,7 @@ function parseInvoiceText(text) {
   flatText = flatText.replace(/Bei Waren[\s\S]*?(?=\d{4}[A-Z]|\d{4} [A-Z]|ONS[A-Z]|\d{7,8}|N\d{5,7})/g, '');
   // Collapse multiple spaces after currency symbols so the split lookbehind (fixed-length)
   // can match "CHF " regardless of how many spaces the PDF layout left behind.
-  flatText = flatText.replace(/(CHF|EUR|GBP) {2,}/g, '$1 ');
+  flatText = flatText.replace(/(CHF|EUR|GBP|USD|CAD) {2,}/g, '$1 ');
   const itemsStart = flatText.indexOf("DiscountTotal");
 
   // Determine where the items section ends.
@@ -309,7 +309,10 @@ function parseInvoiceText(text) {
   // Read from the items section, where the currency sits next to the amounts,
   // rather than the first mention anywhere in the document — a header or a
   // terms paragraph naming another currency would have set the whole export to it.
-  const currencyM = /\b(CHF|EUR|GBP)\b/.exec(itemsText) || /\b(CHF|EUR|GBP)\b/.exec(text);
+  // Same alternation as every other currency-aware regex in this file — the two
+  // lists used to disagree, so a USD invoice read its grand total and then found
+  // zero items.
+  const currencyM = /\b(CHF|EUR|GBP|USD|CAD)\b/.exec(itemsText) || /\b(CHF|EUR|GBP|USD|CAD)\b/.exec(text);
   invoice.currency = currencyM ? currencyM[1] : "CHF";
 
   // Expected totals — read from the LAST "Goods total" line (the grand total).
@@ -324,7 +327,7 @@ function parseInvoiceText(text) {
   // N\d{5,7}: N-prefixed items (N+5 to N+7 digits).
   // (?<=CHF/EUR/GBP )\d{4}[A-Z]: alphanumeric items (e.g. 4868G, 5045B) that appear
   //   immediately after a CHF/EUR/GBP total line (collapsed newline becomes space).
-  const splitRe = /(?<![\dN])(?=\d{7,8}(?!\d))|(?<!\d)(?=N\d{5,7}(?!\d))|(?<=(?:CHF|EUR|GBP) )(?=\d{4}[A-Z])|(?<=(?:CHF|EUR|GBP) )(?=\d{4} [A-Z])|(?<=(?:CHF|EUR|GBP) )(?=ONS[A-Z])/g;
+  const splitRe = /(?<![\dN])(?=\d{7,8}(?!\d))|(?<!\d)(?=N\d{5,7}(?!\d))|(?<=(?:CHF|EUR|GBP|USD|CAD) )(?=\d{4}[A-Z])|(?<=(?:CHF|EUR|GBP|USD|CAD) )(?=\d{4} [A-Z])|(?<=(?:CHF|EUR|GBP|USD|CAD) )(?=ONS[A-Z])/g;
   const blocks  = itemsText.split(splitRe).filter(b => b.trim());
 
   // ── STEP 2 — Parse each block independently ───────────────────────────────
@@ -356,7 +359,7 @@ function parseInvoiceText(text) {
         // in turn hid the real unrecognised lines. Only record a miss when the
         // block actually looks like an invoice line: a tariff-length digit run
         // and at least one currency amount.
-        const looksLikeRow = /\d{10}/.test(block) && /(?:CHF|EUR|GBP)/.test(block);
+        const looksLikeRow = /\d{10}/.test(block) && /(?:CHF|EUR|GBP|USD|CAD)/.test(block);
         if (looksLikeRow) {
           missedRows.push({ itemNo: "???", reason: "no item number in block", context: block.slice(0, 150).replace(/\s+/g, " ") });
         }
@@ -389,7 +392,7 @@ function parseInvoiceText(text) {
       // that item's tariff, quantity, price and total while the item itself was
       // still spliced in separately and counted twice.
       const rest    = block.slice(itemNoEnd);
-      const curIdx  = rest.search(/(?:CHF|EUR|GBP)/);
+      const curIdx  = rest.search(/(?:CHF|EUR|GBP|USD|CAD)/);
       const bareM   = /(\d{10})(?=\d)/.exec(curIdx > 0 ? rest.slice(0, curIdx) : rest);
       if (bareM) {
         tariffNo  = bareM[1];
@@ -407,7 +410,7 @@ function parseInvoiceText(text) {
     // block from picking up footer CHF amounts (Goods total, Subtotal, VAT, Total)
     // that appear between the last item and SUBTOTAL TARIFF NO.
     const afterTariffText = block.slice(tariffEnd);
-    const chfAfterTariff  = [...afterTariffText.matchAll(/([\d., ]+?)\s*(?:CHF|EUR|GBP)/g)];
+    const chfAfterTariff  = [...afterTariffText.matchAll(/([\d., ]+?)\s*(?:CHF|EUR|GBP|USD|CAD)/g)];
     if (chfAfterTariff.length < 3) {
       missedRows.push({ itemNo, reason: `${chfAfterTariff.length} CHF values after tariff`, context: block.slice(0, 200).replace(/\s+/g, " ") });
       continue;
@@ -531,7 +534,7 @@ function parseInvoiceText(text) {
   const parsedItemNos = new Set(invoice.items.map(i => i.itemNo));
   const unparsedItemNos = [];
   const _seenUnparsed = new Set();
-  const _scanRe = /(?<![\dN])(\d{7,8})(?!\d)|(?<!\d)(N\d{5,7})(?!\d)|(?<=(?:CHF|EUR|GBP) )(\d{4}[A-Z])|(?<=(?:CHF|EUR|GBP) )(\d{4})(?= [A-Z])|(?<=(?:CHF|EUR|GBP) )(ONS[A-Z]+)/g;
+  const _scanRe = /(?<![\dN])(\d{7,8})(?!\d)|(?<!\d)(N\d{5,7})(?!\d)|(?<=(?:CHF|EUR|GBP|USD|CAD) )(\d{4}[A-Z])|(?<=(?:CHF|EUR|GBP|USD|CAD) )(\d{4})(?= [A-Z])|(?<=(?:CHF|EUR|GBP|USD|CAD) )(ONS[A-Z]+)/g;
   for (const c of itemsText.matchAll(_scanRe)) {
     const itemNum = c[1] || c[2] || c[3] || c[4] || c[5];
     if (itemNum && !parsedItemNos.has(itemNum) && !_seenUnparsed.has(itemNum)) {
@@ -573,9 +576,9 @@ function parseInvoiceText(text) {
   };
 
   // Invoice-level discount and VAT
-  const invDiscM = /Discount\s+([\d.,]+)\s*(?:CHF|EUR|GBP)/i.exec(text);
+  const invDiscM = /Discount\s+([\d.,]+)\s*(?:CHF|EUR|GBP|USD|CAD)/i.exec(text);
   if (invDiscM) invoice.invoiceDiscount = parseEuropeanNumber(invDiscM[1]);
-  const vatM = /VAT\s+([\d.,]+)\s*(?:CHF|EUR|GBP)/i.exec(text);
+  const vatM = /VAT\s+([\d.,]+)\s*(?:CHF|EUR|GBP|USD|CAD)/i.exec(text);
   if (vatM) invoice.vat = parseEuropeanNumber(vatM[1]);
 
   return invoice;
@@ -975,6 +978,8 @@ export default async function handler(req, res) {
       stack: (e?.stack || "").split("\n").slice(0, 4).join(" | "),
     }));
     if (res.headersSent) return res.end();
+    // Clear any length staged for the xlsx body we are no longer sending.
+    try { res.removeHeader("Content-Length"); } catch {}
     return res.status(500).json({
       error: `Onverwachte fout bij het verwerken: ${e?.message || "onbekende fout"}`,
     });
@@ -1089,7 +1094,10 @@ async function handleConvert(req, res) {
     "Content-Disposition",
     `attachment; filename="${asciiName}.xlsx"; filename*=UTF-8''${encodeURIComponent(exportName + ".xlsx")}`
   );
-  res.setHeader("Content-Length", xlsxBuffer.byteLength);
+  // Content-Length is set just before res.end, not here: a throw in the ~35
+  // lines of header work below would otherwise leave a stale length pointing at
+  // the xlsx size on the catch handler's JSON error, and the client would wait
+  // for a body that never arrives.
   // Expose validation stats so the frontend can show a summary
   res.setHeader("X-Validation-Qty",   String(invoice._validation?.parsedQty   ?? ""));
   res.setHeader("X-Validation-Total", String(invoice._validation?.parsedTotal ?? ""));
@@ -1151,6 +1159,7 @@ async function handleConvert(req, res) {
     previewSent = setSafeHeader(res, "X-Preview", encodeURIComponent(JSON.stringify(previewRows.slice(0, n))));
   }
   if (!previewSent) res.setHeader("X-Preview-Dropped", "1");
+  res.setHeader("Content-Length", xlsxBuffer.byteLength);
   // xlsxBuffer is already a Node Buffer; wrapping it again copied the whole file.
   return res.status(200).end(xlsxBuffer);
 }

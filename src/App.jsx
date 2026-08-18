@@ -80,6 +80,8 @@ const i18n = {
       "Controleer ze handmatig voordat je ze voor de douane gebruikt:\r\n\r\n" +
       names.map(n => "  - " + n).join("\r\n") + "\r\n\r\n" +
       legend + "\r\n",
+    alreadyRunning: "Er wordt al een reeks verwerkt — wacht tot die klaar is.",
+    scrollHint:    (n) => `${n} bestanden — scroll in de lijst voor de rest`,
     noPdfsFound:   (n) => n === 1
       ? "Dat bestand is geen PDF. Sleep een Commercial Invoice in PDF-formaat."
       : `Geen van die ${n} bestanden is een PDF. Sleep Commercial Invoices in PDF-formaat.`,
@@ -181,6 +183,8 @@ const i18n = {
       "Check them by hand before using them for customs:\r\n\r\n" +
       names.map(n => "  - " + n).join("\r\n") + "\r\n\r\n" +
       legend + "\r\n",
+    alreadyRunning: "A batch is already running — wait for it to finish.",
+    scrollHint:    (n) => `${n} files — scroll inside the list for the rest`,
     noPdfsFound:   (n) => n === 1
       ? "That file is not a PDF. Drop a Commercial Invoice in PDF format."
       : `None of those ${n} files is a PDF. Drop Commercial Invoices in PDF format.`,
@@ -340,8 +344,13 @@ export default function App() {
     localStorage.setItem("oneill_lang", next);
   };
   const inputRef = useRef(null);
+  // Guards against a second drop while one batch is still running. Both loops
+  // used to call setResults on completion and the later finisher silently won,
+  // discarding the other batch's results and download buttons.
+  const runningRef = useRef(false);
 
   const runBatch = useCallback(async (files) => {
+    if (runningRef.current) { setNotice(t.alreadyRunning); return; }
     // Files from network shares and mail clients often arrive with an empty
     // MIME type, so fall back to the extension. Previously those were dropped
     // without a word, and the "N of M processed" count hid the gap.
@@ -350,18 +359,19 @@ export default function App() {
     const skipped = all.length - pdfs.length;
 
     if (!pdfs.length) {
-      // Return before setPhase left the previous result on screen, complete
-      // with a live download button belonging to a different invoice.
-      setResults([]);
-      setPhase("idle");
+      // Show the notice without touching results. Clearing them threw away a
+      // finished batch — twelve converted invoices lost because someone dropped
+      // a stray .docx on the card before downloading the ZIP.
       setNotice(t.noPdfsFound(all.length));
       return;
     }
     setNotice(skipped > 0 ? t.skippedNonPdf(skipped) : null);
 
+    runningRef.current = true;
     setPhase("processing");
     setResults([]);
 
+    try {
     const batch = [];
     for (let i = 0; i < pdfs.length; i++) {
       const file = pdfs[i];
@@ -427,6 +437,9 @@ export default function App() {
         saveHistory(updated);
         return updated;
       });
+    }
+    } finally {
+      runningRef.current = false;
     }
   }, [t]);
 
@@ -1157,11 +1170,22 @@ function BatchDoneState({ results, successCount, errorCount, partialCount, onDow
         )}
       </div>
 
+      {/* An inner scroll area with no affordance hid failed rows below the fold,
+          and the summary only says how many failed, not which. */}
+      {results.length > 7 && (
+        <p style={{ fontSize: "0.7rem", color: T.textMute, textAlign: "center", marginBottom: "0.4rem" }}>
+          {t.scrollHint(results.length)}
+        </p>
+      )}
       <div style={{
         display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "1.5rem",
         // Long batches get their own scroll area so the summary and the reset
         // button below stay reachable no matter how many files were dropped.
         maxHeight: "min(55vh, 560px)", overflowY: "auto", overflowX: "hidden",
+        // Make the scroll region visible rather than an invisible clip.
+        border: results.length > 7 ? `1px solid ${T.line}` : "none",
+        borderRadius: results.length > 7 ? 10 : 0,
+        padding: results.length > 7 ? "0.5rem" : 0,
       }}>
         {results.map((r, i) => {
           // Row chrome comes from the same predicate as the filename and the
