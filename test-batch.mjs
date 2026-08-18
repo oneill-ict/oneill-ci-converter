@@ -99,33 +99,38 @@ function extractCountry(groupCountry) {
 }
 
 // Mirrors readGoodsTotal() in api/convert.js — keep both in sync.
-function readGoodsTotal(flatText) {
+export const AMOUNT_RE = /^(?:0|[1-9]\d{0,2}(?:\.\d{3})*|[1-9]\d*),\d{2}$/;
+
+export function readGoodsTotal(flatText) {
   const CUR = /(?:CHF|EUR|GBP|USD|CAD)/.source;
 
-  let spaced = null;
-  for (const m of flatText.matchAll(new RegExp(`Goods total\\s*(\\d+)\\s+([\\d.,]+)\\s*${CUR}`, "gi"))) spaced = m;
-  if (spaced) return { qty: parseInt(spaced[1], 10), total: parseEuropeanNumber(spaced[2]) };
+  const tariffTableAt = flatText.toLowerCase().indexOf("subtotal tariff no.");
+  const zone = tariffTableAt >= 0 ? flatText.slice(0, tariffTableAt) : flatText;
 
-  let glued = null;
-  for (const m of flatText.matchAll(new RegExp(`Goods total([\\d.,]+)\\s*${CUR}`, "gi"))) glued = m;
-  if (!glued) return { qty: null, total: null };
+  let last = null;
+  for (const m of zone.matchAll(new RegExp(`Goods total\\s*([\\d.,]+)(?:\\s+([\\d.,]+))?\\s*${CUR}`, "gi"))) last = m;
+  if (!last) return { qty: null, total: null };
 
-  const tail  = flatText.slice(glued.index);
-  const subM  = new RegExp(`Subtotal([\\d.,]+)\\s*${CUR}`, "i").exec(tail);
-  const discM = new RegExp(`Discount([\\d.,]+)\\s*${CUR}`, "i").exec(tail);
+  if (last[2] !== undefined) {
+    return { qty: parseInt(last[1], 10), total: parseEuropeanNumber(last[2]) };
+  }
+
+  const tail = zone.slice(last.index);
+  const subM = new RegExp(`Subtotal\\s*([\\d.,]+)\\s*${CUR}`, "i").exec(tail);
   if (!subM) return { qty: null, total: null };
+  const discM = new RegExp(`Discount\\s*([\\d.,]+)\\s*${CUR}`, "i").exec(tail.slice(0, subM.index));
   const target = round2(parseEuropeanNumber(subM[1]) + (discM ? parseEuropeanNumber(discM[1]) : 0));
 
-  const run = glued[1];
+  const run = last[1];
   for (let i = 1; i < run.length; i++) {
     const qStr = run.slice(0, i), aStr = run.slice(i);
     if (!/^\d+$/.test(qStr)) break;
-    if (!/^(0|[1-9]\d{0,2})(\.\d{3})*,\d{2}$/.test(aStr)) continue;
+    if (!AMOUNT_RE.test(aStr)) continue;
     if (Math.abs(parseEuropeanNumber(aStr) - target) < 0.005) {
       return { qty: parseInt(qStr, 10), total: parseEuropeanNumber(aStr) };
     }
   }
-  return { qty: null, total: target };
+  return { qty: null, total: null };
 }
 
 function parseInvoiceText(text) {
@@ -290,6 +295,9 @@ function parseInvoiceText(text) {
 }
 
 // ── Find all PDFs ─────────────────────────────────────────────────────────────
+// Everything below only runs when this file is executed directly, so other test
+// files can import readGoodsTotal without kicking off a 45-PDF batch run.
+const RUN_AS_SCRIPT = process.argv[1] && process.argv[1].endsWith("test-batch.mjs");
 
 function findPdfs(dir) {
   const results = [];
@@ -302,9 +310,9 @@ function findPdfs(dir) {
 }
 
 const BASE = "C:\\Users\\sjoerd.lier\\Downloads\\ci-training-files";
-const pdfs = findPdfs(BASE).sort();
+const pdfs = RUN_AS_SCRIPT ? findPdfs(BASE).sort() : [];
 
-console.log(`\nBatch testing ${pdfs.length} PDFs\n${"─".repeat(80)}`);
+if (RUN_AS_SCRIPT) console.log(`\nBatch testing ${pdfs.length} PDFs\n${"─".repeat(80)}`);
 
 const results = { pass: [], fail: [], skip: [], error: [] };
 // Invoices whose grand total could not be read are validated against nothing —
@@ -370,6 +378,7 @@ for (const pdfPath of pdfs) {
   }
 }
 
+if (RUN_AS_SCRIPT) {
 console.log(`\n${"─".repeat(80)}`);
 console.log(`PASS: ${results.pass.length}  FAIL: ${results.fail.length}  SKIP: ${results.skip.length}  ERROR: ${results.error.length}`);
 
@@ -394,4 +403,5 @@ if (results.fail.length > 0) {
       }
     }
   }
+}
 }

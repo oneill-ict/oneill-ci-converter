@@ -141,43 +141,60 @@ function extractCountry(groupCountry) {
 // Subtotal + Discount — neither of which carries a quantity prefix — and the
 // quantity is whatever digits remain in front of it.
 // Returns { qty, total }; either field is null when it cannot be established.
+// A well-formed European amount: "0,00", "1.155,47", "500,00", "913304,16".
+// Rejects a spurious leading zero ("01.155,47"), which is what keeps the split
+// of a glued run unique.
+const AMOUNT_RE = /^(?:0|[1-9]\d{0,2}(?:\.\d{3})*|[1-9]\d*),\d{2}$/;
+
 function readGoodsTotal(flatText) {
   const CUR = /(?:CHF|EUR|GBP|USD|CAD)/.source;
 
-  // Layout A — quantity and amount separated by whitespace. The label itself may
-  // sit flush against the quantity ("Goods total226 8.429,10"), so only the gap
-  // between quantity and amount is required; that gap is what tells the layouts apart.
-  let spaced = null;
-  for (const m of flatText.matchAll(new RegExp(`Goods total\\s*(\\d+)\\s+([\\d.,]+)\\s*${CUR}`, "gi"))) spaced = m;
-  if (spaced) return { qty: parseInt(spaced[1], 10), total: parseEuropeanNumber(spaced[2]) };
+  // Stop before the tariff breakdown. Its column header reads "Tariff No.Subtotal"
+  // followed directly by a tariff number and amount, so a Subtotal search that ran
+  // past this point could read "Subtotal420292989089,10" and set the expected total
+  // to 420 billion — a guaranteed false mismatch on a perfectly parsed invoice.
+  const tariffTableAt = flatText.toLowerCase().indexOf("subtotal tariff no.");
+  const zone = tariffTableAt >= 0 ? flatText.slice(0, tariffTableAt) : flatText;
 
-  // Layout B — quantity glued to the amount. Take the last occurrence so
-  // per-page running subtotals don't shadow the grand total.
-  let glued = null;
-  for (const m of flatText.matchAll(new RegExp(`Goods total([\\d.,]+)\\s*${CUR}`, "gi"))) glued = m;
-  if (!glued) return { qty: null, total: null };
+  // One pass over both layouts, taking the LAST occurrence. Trying the spaced
+  // layout first across the whole document let a spaced per-page subtotal beat a
+  // glued grand total further down.
+  //   spaced: "Goods total226 8.429,10 CHF"   → two runs
+  //   glued:  "Goods total2913.304,16 EUR"    → one run
+  let last = null;
+  for (const m of zone.matchAll(new RegExp(`Goods total\\s*([\\d.,]+)(?:\\s+([\\d.,]+))?\\s*${CUR}`, "gi"))) last = m;
+  if (!last) return { qty: null, total: null };
 
-  // Pin the amount using the footer that directly follows this line.
-  const tail = flatText.slice(glued.index);
-  const subM  = new RegExp(`Subtotal([\\d.,]+)\\s*${CUR}`, "i").exec(tail);
-  const discM = new RegExp(`Discount([\\d.,]+)\\s*${CUR}`, "i").exec(tail);
+  if (last[2] !== undefined) {
+    return { qty: parseInt(last[1], 10), total: parseEuropeanNumber(last[2]) };
+  }
+
+  // Glued: pin the amount from the footer rows that follow. `\s*` after each
+  // label because templates that glue the goods-total run still space the rest
+  // ("Subtotal  12.750,23") — requiring a digit immediately after the label made
+  // this whole branch inert on exactly that combination.
+  const tail = zone.slice(last.index);
+  const subM = new RegExp(`Subtotal\\s*([\\d.,]+)\\s*${CUR}`, "i").exec(tail);
   if (!subM) return { qty: null, total: null };
+  // Only a Discount sitting between the goods total and the subtotal belongs to
+  // this footer. Scanning the whole tail also picked up an unrelated discount
+  // printed after "Total", inflating the target and forcing a false mismatch.
+  const discM = new RegExp(`Discount\\s*([\\d.,]+)\\s*${CUR}`, "i").exec(tail.slice(0, subM.index));
   const target = round2(parseEuropeanNumber(subM[1]) + (discM ? parseEuropeanNumber(discM[1]) : 0));
 
-  // Split the run so the amount equals the target. The leading group may not
-  // carry a spurious zero ("01.155,47" is not a real amount), which makes the
-  // matching split unique.
-  const run = glued[1];
+  // Split the run so the amount equals the target.
+  const run = last[1];
   for (let i = 1; i < run.length; i++) {
     const qStr = run.slice(0, i), aStr = run.slice(i);
     if (!/^\d+$/.test(qStr)) break;
-    if (!/^(0|[1-9]\d{0,2})(\.\d{3})*,\d{2}$/.test(aStr)) continue;
+    if (!AMOUNT_RE.test(aStr)) continue;
     if (Math.abs(parseEuropeanNumber(aStr) - target) < 0.005) {
       return { qty: parseInt(qStr, 10), total: parseEuropeanNumber(aStr) };
     }
   }
-  // The amount is known even when the quantity cannot be separated out.
-  return { qty: null, total: target };
+  // No split reproduces the target, so the target itself is not trustworthy
+  // either — refuse rather than report a figure nothing in the run confirms.
+  return { qty: null, total: null };
 }
 
 // Returns the longest item code from ITEM_DB that starts at text[pos],
