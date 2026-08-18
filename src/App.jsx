@@ -178,12 +178,19 @@ async function convertFile(file, force = false) {
   const total            = parseFloat(res.headers.get("X-Validation-Total") || "0");
   // "1" only when the totals were actually compared against the invoice footer.
   const checked          = res.headers.get("X-Validation-Checked") === "1";
-  const previewRaw       = res.headers.get("X-Preview");
-  const preview          = previewRaw ? JSON.parse(decodeURIComponent(previewRaw)) : [];
-  const unparsedRaw      = res.headers.get("X-Unparsed-Items");
-  const unparsedItemNos  = unparsedRaw ? JSON.parse(unparsedRaw) : [];
+  // These headers are diagnostics. A malformed or truncated value must never
+  // discard an otherwise good conversion, so parse failures degrade to empty.
+  const parseHeader = (raw, decode) => {
+    if (!raw) return [];
+    try { return JSON.parse(decode ? decodeURIComponent(raw) : raw); }
+    catch { return []; }
+  };
+  const preview          = parseHeader(res.headers.get("X-Preview"), true);
+  const unparsedItemNos  = parseHeader(res.headers.get("X-Unparsed-Items"), false);
+  // The list is capped server-side; the count is the true total.
+  const unparsedCount    = parseInt(res.headers.get("X-Unparsed-Count") || "0", 10) || unparsedItemNos.length;
   const blob             = await res.blob();
-  return { blob, qty, total, checked, preview, unparsedItemNos };
+  return { blob, qty, total, checked, preview, unparsedItemNos, unparsedCount };
 }
 
 // ── App ─────────────────────────────────────────────────────────────────────

@@ -843,7 +843,38 @@ async function buildExcel(invoice) {
 
 // ── Handler ────────────────────────────────────────────────────────────────
 
+// Header values must be Latin-1 (Node throws ERR_INVALID_CHAR otherwise) and
+// the edge caps total response headers at roughly 16 KB. A conversion that
+// succeeded must not die on the way out because a diagnostic header grew too
+// large, so an unsafe value is dropped rather than sent.
+const MAX_HEADER_BYTES = 4000;
+function setSafeHeader(res, name, value) {
+  const s = String(value);
+  if (Buffer.byteLength(s, "utf8") > MAX_HEADER_BYTES) return false;
+  if (/[^\t\x20-\x7e\x80-\xff]/.test(s)) return false;
+  res.setHeader(name, s);
+  return true;
+}
+
+// Outer guard: every uncaught throw below became a bare FUNCTION_INVOCATION_FAILED
+// with no JSON body, which the frontend could only show as "HTTP 500".
 export default async function handler(req, res) {
+  try {
+    return await handleConvert(req, res);
+  } catch (e) {
+    console.error(JSON.stringify({
+      event: "ci_unhandled_error",
+      message: e?.message || String(e),
+      stack: (e?.stack || "").split("\n").slice(0, 4).join(" | "),
+    }));
+    if (res.headersSent) return res.end();
+    return res.status(500).json({
+      error: `Onverwachte fout bij het verwerken: ${e?.message || "onbekende fout"}`,
+    });
+  }
+}
+
+async function handleConvert(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
 
   if (req.method === "OPTIONS") {
@@ -953,10 +984,13 @@ export default async function handler(req, res) {
   res.setHeader("X-Validation-Checked",        v?.checked ? "1" : "0");
   res.setHeader("X-Validation-Expected-Qty",   String(v?.expectedQty   ?? ""));
   res.setHeader("X-Validation-Expected-Total", String(v?.expectedTotal ?? ""));
-  // Expose unparsed item numbers even on success so the frontend can show a soft warning
+  // Expose unparsed item numbers even on success so the frontend can show a soft
+  // warning. The list is unbounded in principle — a large invoice hitting a new
+  // item format could produce thousands — so send a count alongside a capped list.
   const unparsedNos = (v?.unparsedItemNos || []).map(r => r.itemNo);
   if (unparsedNos.length > 0) {
-    res.setHeader("X-Unparsed-Items", JSON.stringify(unparsedNos));
+    res.setHeader("X-Unparsed-Count", String(unparsedNos.length));
+    setSafeHeader(res, "X-Unparsed-Items", JSON.stringify(unparsedNos.slice(0, 40)));
   }
   // First-10-rows preview so the frontend can show a table before confirming download
   const previewRows = invoice.items.slice(0, 10).map(it => ({
@@ -967,6 +1001,7 @@ export default async function handler(req, res) {
     p: it.pricePerPiece,
     t: it.total,
   }));
-  res.setHeader("X-Preview", encodeURIComponent(JSON.stringify(previewRows)));
-  return res.status(200).end(Buffer.from(xlsxBuffer));
+  setSafeHeader(res, "X-Preview", encodeURIComponent(JSON.stringify(previewRows)));
+  // xlsxBuffer is already a Node Buffer; wrapping it again copied the whole file.
+  return res.status(200).end(xlsxBuffer);
 }
