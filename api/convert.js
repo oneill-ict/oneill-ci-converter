@@ -118,6 +118,55 @@ function extractCountry(groupCountry) {
   return words[words.length - 1] || trimmed;
 }
 
+// Reads the invoice grand total from the "Goods total" footer line.
+// Two layouts exist across templates:
+//   spaced:       "Goods total 226 8.429,10 CHF"  → 226 pieces, 8.429,10
+//   glued:        "Goods total2913.304,16 EUR"    → 291 pieces, 3.304,16
+// Only the spaced form used to be recognised, so on glued invoices both values
+// came back null and validation was silently skipped (it treats null as "ok").
+// The glued run is ambiguous on its own, so the amount is pinned via
+// Subtotal + Discount — neither of which carries a quantity prefix — and the
+// quantity is whatever digits remain in front of it.
+// Returns { qty, total }; either field is null when it cannot be established.
+function readGoodsTotal(flatText) {
+  const CUR = /(?:CHF|EUR|GBP|USD|CAD)/.source;
+
+  // Layout A — quantity and amount separated by whitespace. The label itself may
+  // sit flush against the quantity ("Goods total226 8.429,10"), so only the gap
+  // between quantity and amount is required; that gap is what tells the layouts apart.
+  let spaced = null;
+  for (const m of flatText.matchAll(new RegExp(`Goods total\\s*(\\d+)\\s+([\\d.,]+)\\s*${CUR}`, "gi"))) spaced = m;
+  if (spaced) return { qty: parseInt(spaced[1], 10), total: parseEuropeanNumber(spaced[2]) };
+
+  // Layout B — quantity glued to the amount. Take the last occurrence so
+  // per-page running subtotals don't shadow the grand total.
+  let glued = null;
+  for (const m of flatText.matchAll(new RegExp(`Goods total([\\d.,]+)\\s*${CUR}`, "gi"))) glued = m;
+  if (!glued) return { qty: null, total: null };
+
+  // Pin the amount using the footer that directly follows this line.
+  const tail = flatText.slice(glued.index);
+  const subM  = new RegExp(`Subtotal([\\d.,]+)\\s*${CUR}`, "i").exec(tail);
+  const discM = new RegExp(`Discount([\\d.,]+)\\s*${CUR}`, "i").exec(tail);
+  if (!subM) return { qty: null, total: null };
+  const target = round2(parseEuropeanNumber(subM[1]) + (discM ? parseEuropeanNumber(discM[1]) : 0));
+
+  // Split the run so the amount equals the target. The leading group may not
+  // carry a spurious zero ("01.155,47" is not a real amount), which makes the
+  // matching split unique.
+  const run = glued[1];
+  for (let i = 1; i < run.length; i++) {
+    const qStr = run.slice(0, i), aStr = run.slice(i);
+    if (!/^\d+$/.test(qStr)) break;
+    if (!/^(0|[1-9]\d{0,2})(\.\d{3})*,\d{2}$/.test(aStr)) continue;
+    if (Math.abs(parseEuropeanNumber(aStr) - target) < 0.005) {
+      return { qty: parseInt(qStr, 10), total: parseEuropeanNumber(aStr) };
+    }
+  }
+  // The amount is known even when the quantity cannot be separated out.
+  return { qty: null, total: target };
+}
+
 // Returns the longest item code from ITEM_DB that starts at text[pos],
 // or null if nothing matches. minLen guards against 2-3 char false positives.
 function findDbItemAt(text, pos, minLen = 4) {
@@ -211,14 +260,9 @@ function parseInvoiceText(text) {
     ? flatText.slice(itemsStart, itemsEnd)
     : itemsStart >= 0 ? flatText.slice(itemsStart) : flatText;
 
-  // Expected totals — read from the LAST "Goods total N CHF/EUR" line (the grand total).
-  // Scan the full flatText so intermediate per-page subtotals don't shadow the real total.
-  let lastGtM = null;
-  for (const m of flatText.matchAll(/Goods total\s*(\d+)\s+([\d.,]+)\s*(?:CHF|EUR|GBP)/gi)) {
-    lastGtM = m;
-  }
-  const expectedQty   = lastGtM ? parseInt(lastGtM[1], 10) : null;
-  const expectedTotal = lastGtM ? parseEuropeanNumber(lastGtM[2]) : null;
+  // Expected totals — read from the LAST "Goods total" line (the grand total).
+  // Scan the full flatText so intermediate per-page subtotals don't shadow it.
+  const { qty: expectedQty, total: expectedTotal } = readGoodsTotal(flatText);
 
   // ── STEP 1 — Split text into per-item blocks ─────────────────────────────
   // Split on item-number boundaries.
