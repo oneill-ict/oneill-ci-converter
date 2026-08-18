@@ -140,6 +140,8 @@ function parseInvoiceText(text) {
   const flatLower  = flatText.toLowerCase();
   let itemsEnd     = flatLower.indexOf("subtotal tariff no.");
   if (itemsEnd < 0) itemsEnd = flatLower.lastIndexOf("goods total");
+  const lastGoodsTotal = flatLower.lastIndexOf("goods total", itemsEnd < 0 ? undefined : itemsEnd);
+  if (lastGoodsTotal > itemsStart) itemsEnd = lastGoodsTotal;
   const itemsText  = itemsStart >= 0 && itemsEnd > itemsStart
     ? flatText.slice(itemsStart, itemsEnd)
     : itemsStart >= 0 ? flatText.slice(itemsStart) : flatText;
@@ -168,7 +170,10 @@ function parseInvoiceText(text) {
         itemNo    = dbItem;
         itemNoEnd = leadWs + dbItem.length;
       } else {
-        missedRows.push({ itemNo: "???", reason: "no item number in block", context: block.slice(0, 150).replace(/\s+/g, " ") });
+        const looksLikeRow = /\d{10}/.test(block) && /(?:CHF|EUR|GBP|USD|CAD)/.test(block);
+        if (looksLikeRow) {
+          missedRows.push({ itemNo: "???", reason: "no item number in block", context: block.slice(0, 150).replace(/\s+/g, " ") });
+        }
         continue;
       }
     }
@@ -305,6 +310,11 @@ for (const pdfPath of pdfs) {
     if (r.valid) {
       const unparsed = r.missedRows.length > 0 ? ` [${r.missedRows.length} missed]` : "";
       console.log(`  ✅ PASS  ${label}  qty=${r.parsedQty}/${r.expectedQty} total=${r.parsedTotal}/${r.expectedTotal} ${r.currency}${unparsed}`);
+      // Totals reconcile, but a block was still unreadable — worth seeing, since
+      // it is the shape a future silent gap would take.
+      for (const mr of r.missedRows) {
+        console.log(`         ↳ ${mr.itemNo}: ${mr.reason} — "${mr.context.slice(0, 90)}"`);
+      }
       results.pass.push(label);
     } else {
       const dQty   = r.expectedQty   != null ? ` Δqty=${r.parsedQty - r.expectedQty}` : "";

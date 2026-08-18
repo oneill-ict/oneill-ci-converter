@@ -256,6 +256,14 @@ function parseInvoiceText(text) {
   const flatLower  = flatText.toLowerCase();
   let itemsEnd     = flatLower.indexOf("subtotal tariff no.");
   if (itemsEnd < 0) itemsEnd = flatLower.lastIndexOf("goods total");
+  // Trim the grand-total footer, which sits between the last item and
+  // "SUBTOTAL TARIFF NO.". Its glued quantity+amount run ("12906134.293,59")
+  // matches the 8-digit item-number pattern, so the footer was split off as a
+  // phantom row — reported as an unreadable line and listed in the missing-items
+  // warning as item "12906134". Per-page "Goods total" subtotals can be followed
+  // by real NOS items, so only the last occurrence is cut.
+  const lastGoodsTotal = flatLower.lastIndexOf("goods total", itemsEnd < 0 ? undefined : itemsEnd);
+  if (lastGoodsTotal > itemsStart) itemsEnd = lastGoodsTotal;
   const itemsText  = itemsStart >= 0 && itemsEnd > itemsStart
     ? flatText.slice(itemsStart, itemsEnd)
     : itemsStart >= 0 ? flatText.slice(itemsStart) : flatText;
@@ -298,7 +306,16 @@ function parseInvoiceText(text) {
         itemNo    = dbItem;
         itemNoEnd = leadWs + dbItem.length;
       } else {
-        missedRows.push({ itemNo: "???", reason: "no item number in block", context: block.slice(0, 150).replace(/\s+/g, " ") });
+        // The text before the first item (the column-header remnant) is not a
+        // row, and recording it produced a phantom "???" miss on every single
+        // invoice. That noise is why the UI filtered "???" out entirely — which
+        // in turn hid the real unrecognised lines. Only record a miss when the
+        // block actually looks like an invoice line: a tariff-length digit run
+        // and at least one currency amount.
+        const looksLikeRow = /\d{10}/.test(block) && /(?:CHF|EUR|GBP)/.test(block);
+        if (looksLikeRow) {
+          missedRows.push({ itemNo: "???", reason: "no item number in block", context: block.slice(0, 150).replace(/\s+/g, " ") });
+        }
         continue;
       }
     }

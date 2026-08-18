@@ -28,6 +28,9 @@ const i18n = {
     mismatchFound: "Gevonden:",
     mismatchExp:   "Verwacht:",
     missedItemsLabel: "Ontbrekend in export",
+    unreadableRows: (n) => n === 1
+      ? "1 regel gevonden waarvan het artikelnummer niet leesbaar was — zie details."
+      : `${n} regels gevonden waarvan het artikelnummer niet leesbaar was — zie details.`,
     missedDetailsLabel: "Reden per item",
     missedReasons: {
       "no tariff number":          "tariefnummer niet gevonden",
@@ -81,6 +84,9 @@ const i18n = {
     mismatchFound: "Found:",
     mismatchExp:   "Expected:",
     missedItemsLabel: "Missing from export",
+    unreadableRows: (n) => n === 1
+      ? "1 line was found whose item number could not be read — see details."
+      : `${n} lines were found whose item numbers could not be read — see details.`,
     missedDetailsLabel: "Reason per item",
     missedReasons: {
       "no tariff number":          "tariff number not found",
@@ -586,13 +592,17 @@ function PartialWarning({ result, onForceDownload, t }) {
 
   // unparsedItemNos: item numbers visible in PDF but missing from output (no reason known)
   const unparsed = (result.unparsedItemNos || []).map(r => typeof r === "string" ? r : r.itemNo);
-  // missedRows: blocks that were found but failed to parse (with reason)
-  const missed   = (result.missedRows || []).filter(r => r.itemNo !== "???");
+  // missedRows: blocks that were found but failed to parse (with reason).
+  // "???" means the line was found but its item number could not be read at all —
+  // the worst case, and previously the only one filtered out of this list.
+  const missed   = result.missedRows || [];
+  const named    = missed.filter(r => r.itemNo !== "???");
+  const unnamed  = missed.filter(r => r.itemNo === "???");
 
   // Items to show in the simple label line: prefer unparsed (more accurate), fall back to missed
-  const namedList = unparsed.length > 0 ? unparsed : missed.map(r => r.itemNo);
+  const namedList = unparsed.length > 0 ? unparsed : named.map(r => r.itemNo);
 
-  // Detailed rows to show when expanded: missed rows with reasons
+  // Detailed rows to show when expanded: every missed row that carries a reason
   const detailRows = missed.filter(r => r.reason);
 
   return (
@@ -612,6 +622,12 @@ function PartialWarning({ result, onForceDownload, t }) {
       {namedList.length > 0 && (
         <p style={{ fontSize: "0.72rem", color: T.textDim, marginTop: "0.35rem", fontFamily: "JetBrains Mono, monospace" }}>
           {t.missedItemsLabel}: {namedList.join(", ")}
+        </p>
+      )}
+
+      {unnamed.length > 0 && (
+        <p style={{ fontSize: "0.72rem", color: "#f59e0b", marginTop: "0.35rem" }}>
+          {t.unreadableRows(unnamed.length)}
         </p>
       )}
 
@@ -639,6 +655,17 @@ function PartialWarning({ result, onForceDownload, t }) {
                     </td>
                     <td style={{ padding: "0.2rem 0", color: T.textDim }}>
                       {humanReason(r.reason, t)}
+                      {/* For an unreadable line the item number tells the user nothing,
+                          so show the raw text instead — that is what they search the PDF for. */}
+                      {r.itemNo === "???" && r.context && (
+                        <div style={{
+                          marginTop: "0.15rem", fontFamily: "JetBrains Mono, monospace",
+                          fontSize: "0.66rem", color: T.textMute,
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        }}>
+                          {r.context.slice(0, 90)}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}
