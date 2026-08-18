@@ -46,7 +46,13 @@ const i18n = {
     failedCount:   (n) => `${n} mislukt`,
     warnCount:     (n) => `${n} met waarschuwing`,
     downloadZip:   "Download alle als ZIP",
-    shortBy:       (n) => n > 0 ? `${n} te weinig` : `${-n} te veel`,
+    // A mismatch fires when the quantity OR the amount is off, so a zero
+    // quantity delta is reachable — "0 te veel" read as nonsense under a
+    // heading about quantities not matching.
+    shortBy:       (n) => n === 0 ? "aantal klopt" : n > 0 ? `${n} te weinig` : `${-n} te veel`,
+    amountOff:     (d) => `bedrag ${d > 0 ? "te laag" : "te hoog"}: CHF ${fmtCHF(Math.abs(d))}`,
+    forcedNote:    "Toch gedownload — dit bestand is niet goedgekeurd.",
+    forceFailed:   (msg) => `Downloaden mislukt: ${msg}`,
     trustSuffix: {
       partial:   "(ONVOLLEDIG)",
       unchecked: "(NIET GECONTROLEERD)",
@@ -141,7 +147,10 @@ const i18n = {
     failedCount:   (n) => `${n} failed`,
     warnCount:     (n) => `${n} with warning`,
     downloadZip:   "Download all as ZIP",
-    shortBy:       (n) => n > 0 ? `${n} short` : `${-n} too many`,
+    shortBy:       (n) => n === 0 ? "quantity matches" : n > 0 ? `${n} short` : `${-n} too many`,
+    amountOff:     (d) => `amount ${d > 0 ? "too low" : "too high"}: CHF ${fmtCHF(Math.abs(d))}`,
+    forcedNote:    "Downloaded anyway — this file is not approved.",
+    forceFailed:   (msg) => `Download failed: ${msg}`,
     trustSuffix: {
       partial:   "(INCOMPLETE)",
       unchecked: "(NOT VERIFIED)",
@@ -821,7 +830,24 @@ function PartialWarning({ result, onForceDownload, t }) {
       <p style={{ fontSize: "0.78rem", color: T.textDim, lineHeight: 1.5 }}>
         {t.mismatchFound} <strong style={{ color: T.text }}>{result.qty} {t.rows} · {fmtCHF(result.total)}</strong><br />
         {t.mismatchExp} <strong style={{ color: T.text }}>{result.expectedQty} {t.rows} · {fmtCHF(result.expectedTotal)}</strong>
+        {/* Name the actual discrepancy — the amount can be off while the piece
+            count matches, and subtracting two small numbers is the reader's job otherwise. */}
+        {(result.expectedQty != null || result.expectedTotal != null) && (
+          <><br />
+            <span style={{ color: "#f59e0b" }}>
+              {result.expectedQty != null && t.shortBy(result.expectedQty - result.qty)}
+              {result.expectedTotal != null && Math.abs(result.expectedTotal - result.total) >= 0.01 &&
+                `${result.expectedQty != null ? " · " : ""}${t.amountOff(result.expectedTotal - result.total)}`}
+            </span>
+          </>
+        )}
       </p>
+      {result.forcedAt && (
+        <p style={{ fontSize: "0.7rem", color: T.textMute, marginTop: "0.35rem" }}>{t.forcedNote}</p>
+      )}
+      {result.forceError && (
+        <p style={{ fontSize: "0.7rem", color: T.bad, marginTop: "0.35rem" }}>{t.forceFailed(result.forceError)}</p>
+      )}
 
       {namedList.length > 0 && (
         <p style={{ fontSize: "0.72rem", color: T.textDim, marginTop: "0.35rem", fontFamily: "JetBrains Mono, monospace" }}>
@@ -1122,7 +1148,21 @@ function BatchDoneState({ results, successCount, errorCount, partialCount, onDow
                     <p style={{ fontSize: "0.7rem", color: "#f59e0b", marginTop: "0.2rem", marginLeft: 17 }}>
                       {t.mismatchFound} {r.qty} / {r.expectedQty} {t.rows}
                       {r.expectedQty != null && ` (${t.shortBy(r.expectedQty - r.qty)})`}
+                      {/* The amount can be the real discrepancy while the piece
+                          count matches; batch mode used to show only the count. */}
+                      {r.expectedTotal != null && Math.abs(r.expectedTotal - r.total) >= 0.01 &&
+                        ` · ${t.amountOff(r.expectedTotal - r.total)}`}
                     </p>
+                    {r.forcedAt && (
+                      <p style={{ fontSize: "0.66rem", color: T.textMute, marginTop: "0.1rem", marginLeft: 17 }}>
+                        {t.forcedNote}
+                      </p>
+                    )}
+                    {r.forceError && (
+                      <p style={{ fontSize: "0.66rem", color: T.bad, marginTop: "0.1rem", marginLeft: 17 }}>
+                        {t.forceFailed(r.forceError)}
+                      </p>
+                    )}
                     {/* The missing item numbers were held in state but never rendered
                         in batch mode, forcing staff to re-upload the file alone. */}
                     <BatchMissingItems result={r} t={t} />
