@@ -108,6 +108,9 @@ const i18n = {
     uncertainQtyNote: (n) => n === 1
       ? "Let op: bij 1 regel kon het aantal niet uit de factuur worden afgeleid — het getal in de export is een schatting. Controleer:"
       : `Let op: bij ${n} regels kon het aantal niet uit de factuur worden afgeleid — die getallen zijn een schatting. Controleer:`,
+    noWeightNote: (n) => n === 1
+      ? "Let op: bij 1 regel staat geen brutogewicht op de factuur. Die cel blijft leeg in het Excel — vul hem handmatig aan:"
+      : `Let op: bij ${n} regels staat geen brutogewicht op de factuur. Die cellen blijven leeg in het Excel — vul ze handmatig aan:`,
     driftNote: (n, excel, stated) =>
       `Let op: het Excel telt op tot CHF ${excel}, de factuur zegt CHF ${stated}. Dat komt door ${n} regel${n === 1 ? "" : "s"} waar aantal × prijs niet exact het regeltotaal oplevert:`,
   },
@@ -211,6 +214,9 @@ const i18n = {
     uncertainQtyNote: (n) => n === 1
       ? "Note: on 1 line the quantity could not be derived from the invoice — the number in the export is an estimate. Please check:"
       : `Note: on ${n} lines the quantity could not be derived from the invoice — those numbers are estimates. Please check:`,
+    noWeightNote: (n) => n === 1
+      ? "Note: 1 line has no gross weight on the invoice. That cell is left empty in the Excel — fill it in by hand:"
+      : `Note: ${n} lines have no gross weight on the invoice. Those cells are left empty in the Excel — fill them in by hand:`,
     driftNote: (n, excel, stated) =>
       `Note: the Excel adds up to CHF ${excel}, the invoice says CHF ${stated}. This comes from ${n} line${n === 1 ? "" : "s"} where quantity × price does not reproduce the stated line total exactly:`,
   },
@@ -1018,6 +1024,47 @@ function DegradedWarning({ result, t }) {
   );
 }
 
+// Every warning a result can carry, in one place. Each of these used to be
+// placed by hand per screen, and each time a new screen appeared they were
+// wired into only one of them — three audits running. A screen now renders
+// this component and gets all of them, including any added later.
+function ResultWarnings({ result, t }) {
+  if (!result) return null;
+  return (
+    <>
+      <DegradedWarning result={result} t={t} />
+      <SilentGapWarning unparsedItemNos={result.unparsedItemNos} count={result.unparsedCount} t={t} />
+      <UncertainQtyWarning items={result.uncertainItems} count={result.uncertainCount} t={t} />
+      <ExcelDriftWarning result={result} t={t} />
+      <NoWeightWarning result={result} t={t} />
+    </>
+  );
+}
+
+// Gross weight is a customs-declared field; a blank had a filename marker and a
+// batch-row reason but no warning of its own on the result screen.
+function NoWeightWarning({ result, t }) {
+  if (!result.noWeightCount) return null;
+  const items = result.noWeightItems || [];
+  return (
+    <div style={{
+      background: T.panelDeep, border: `1px solid #5a4400`, borderRadius: 8,
+      padding: "0.6rem 0.85rem", marginBottom: "0.75rem",
+      display: "flex", alignItems: "flex-start", gap: "0.5rem",
+    }}>
+      <AlertTriangle size={13} color="#c78c00" style={{ marginTop: 2, flexShrink: 0 }} />
+      <p style={{ fontSize: "0.72rem", color: T.textDim, lineHeight: 1.5, margin: 0 }}>
+        {t.noWeightNote(result.noWeightCount)}{" "}
+        {items.length > 0 && (
+          <span style={{ fontFamily: "JetBrains Mono, monospace", color: T.textMute }}>
+            {items.slice(0, 12).join(", ")}{items.length > 12 ? ` +${items.length - 12}` : ""}
+          </span>
+        )}
+      </p>
+    </div>
+  );
+}
+
 function SilentGapWarning({ unparsedItemNos, count, t }) {
   if (!count) return null;
   if (!unparsedItemNos || unparsedItemNos.length === 0) return null;
@@ -1088,10 +1135,6 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
             }}>
               <FileDown size={13} /> {t.redownload}
             </button>
-            <DegradedWarning result={result} t={t} />
-            <SilentGapWarning unparsedItemNos={result.unparsedItemNos} count={result.unparsedCount} t={t} />
-            <UncertainQtyWarning items={result.uncertainItems} count={result.uncertainCount} t={t} />
-            <ExcelDriftWarning result={result} t={t} />
           </>
         )}
 
@@ -1101,6 +1144,11 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
       </div>
 
       {isPartial && <PartialWarning result={result} onForceDownload={onForceDownload} t={t} />}
+
+      {/* Rendered for BOTH outcomes. These used to sit inside the success block
+          only, so the moment a conversion was rejected every explanation of why
+          disappeared — exactly when it was needed. */}
+      {!isError && <ResultWarnings result={result} t={t} />}
 
       {/* totalItems is a line count, not a piece count — passing qty here
           produced "+213 more rows" on a forty-line invoice. */}
