@@ -680,10 +680,14 @@ function rowAxis(r) {
   return "qty";
 }
 
-// The figure worth quoting: for an Excel-total failure that is the workbook's
-// own sum, not the parsed one.
+// The figure worth quoting is always the workbook's own sum — that is the number
+// in the file the user can open and check. Keying this off the axis meant the
+// parsed figure was quoted whenever the quantity ALSO failed, which is most of
+// the time, so the "12 cents out" case the axis fix was written for still
+// reported 2 cents. And on a total-only failure it quoted a figure that appears
+// in no delivered file at all.
 function rowTotal(r) {
-  return rowAxis(r) === "excel" && r.excelTotal != null ? r.excelTotal : r.total;
+  return r.excelTotal != null ? r.excelTotal : r.total;
 }
 
 function exportNameFor(r, t) {
@@ -920,11 +924,7 @@ function PartialWarning({ result, onForceDownload, t }) {
   // "???" means the line was found but its item number could not be read at all —
   // the worst case, and previously the only one filtered out of this list.
   const missed   = result.missedRows || [];
-  const named    = missed.filter(r => r.itemNo !== "???");
   const unnamed  = missed.filter(r => r.itemNo === "???");
-
-  // Items to show in the simple label line: prefer unparsed (more accurate), fall back to missed
-  const namedList = unparsed.length > 0 ? unparsed : named.map(r => r.itemNo);
 
   // Detailed rows to show when expanded: every missed row that carries a reason
   const detailRows = missed.filter(r => r.reason);
@@ -945,13 +945,12 @@ function PartialWarning({ result, onForceDownload, t }) {
         <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#f59e0b" }}>{t.mismatchTitle(failedAxis)}</span>
       </div>
       <p style={{ fontSize: "0.78rem", color: T.textDim, lineHeight: 1.5 }}>
-        {/* When the workbook is what disagrees, show the workbook's own total —
-            quoting the parsed figure named a 2-cent gap on a file that was
-            actually 12 cents out, and the reader went looking for the wrong thing. */}
+        {/* Always the workbook's own figure, always labelled as such — it is the
+            number the reader can open the file and verify. */}
         {t.mismatchFound} <strong style={{ color: T.text }}>
           {result.qty} {t.rows} · {fmtCHF(shownTotal)}
         </strong>
-        {failedAxis === "excel" && <span style={{ color: T.textMute }}> {t.fromTheExcel}</span>}
+        {result.excelTotal != null && <span style={{ color: T.textMute }}> {t.fromTheExcel}</span>}
         <br />
         {t.mismatchExp} <strong style={{ color: T.text }}>{result.expectedQty} {t.rows} · {fmtCHF(result.expectedTotal)}</strong>
         {(result.expectedQty != null || result.expectedTotal != null) && (
@@ -971,11 +970,9 @@ function PartialWarning({ result, onForceDownload, t }) {
         <p style={{ fontSize: "0.7rem", color: T.bad, marginTop: "0.35rem" }}>{t.forceFailed(result.forceError)}</p>
       )}
 
-      {namedList.length > 0 && (
-        <p style={{ fontSize: "0.72rem", color: T.textDim, marginTop: "0.35rem", fontFamily: "JetBrains Mono, monospace" }}>
-          {t.missedItemsLabel}: {namedList.join(", ")}
-        </p>
-      )}
+      {/* The plain item list used to live here too. SilentGapWarning, rendered
+          just below by ResultWarnings, states the same thing with a count and a
+          sentence — two adjacent listings of the same items read as two problems. */}
 
       {unnamed.length > 0 && (
         <p style={{ fontSize: "0.72rem", color: "#f59e0b", marginTop: "0.35rem" }}>
