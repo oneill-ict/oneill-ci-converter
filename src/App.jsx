@@ -60,6 +60,7 @@ const i18n = {
       noweight:  "(GEWICHT ONTBREEKT)",
       uncertain: "(AANTAL GESCHAT)",
       gaps:      "(REGELS ONTBREKEN)",
+      degraded:  "(NIET GECONTROLEERD)",
       nodata:    "(NIET GECONTROLEERD)",
     },
     trustReason: {
@@ -69,6 +70,7 @@ const i18n = {
       noweight:  "bij een of meer regels ontbreekt het brutogewicht",
       uncertain: "bij een of meer regels is het aantal geschat",
       gaps:      "een of meer artikelnummers uit de PDF ontbreken",
+      degraded:  "de controlegegevens konden niet worden uitgelezen",
       nodata:    "de controlegegevens zijn niet ontvangen",
     },
     zipReadmeName: "LEES-DIT-EERST.txt",
@@ -100,6 +102,7 @@ const i18n = {
     download:      "Download",
     anyway:        "Toch",
     silentGapNote: (n) => `Let op: ${n} itemnummer(s) uit de PDF zijn niet in de export opgenomen —`,
+    degradedNote:  "De controlegegevens konden niet worden uitgelezen. Het Excel is aangemaakt, maar de waarschuwingen hieronder zijn mogelijk onvolledig — controleer dit bestand handmatig.",
     uncertainQtyNote: (n) => n === 1
       ? "Let op: bij 1 regel kon het aantal niet uit de factuur worden afgeleid — het getal in de export is een schatting. Controleer:"
       : `Let op: bij ${n} regels kon het aantal niet uit de factuur worden afgeleid — die getallen zijn een schatting. Controleer:`,
@@ -158,6 +161,7 @@ const i18n = {
       noweight:  "(WEIGHT MISSING)",
       uncertain: "(QUANTITY ESTIMATED)",
       gaps:      "(LINES MISSING)",
+      degraded:  "(NOT VERIFIED)",
       nodata:    "(NOT VERIFIED)",
     },
     trustReason: {
@@ -167,6 +171,7 @@ const i18n = {
       noweight:  "the gross weight is missing on one or more lines",
       uncertain: "the quantity on one or more lines is an estimate",
       gaps:      "one or more item numbers from the PDF are missing",
+      degraded:  "the validation data could not be read",
       nodata:    "the validation data was not received",
     },
     zipReadmeName: "READ-ME-FIRST.txt",
@@ -198,6 +203,7 @@ const i18n = {
     download:      "Download",
     anyway:        "Anyway",
     silentGapNote: (n) => `Note: ${n} item number(s) from the PDF were not included in the export —`,
+    degradedNote:  "The validation data could not be read. The Excel was created, but the warnings below may be incomplete — check this file by hand.",
     uncertainQtyNote: (n) => n === 1
       ? "Note: on 1 line the quantity could not be derived from the invoice — the number in the export is an estimate. Please check:"
       : `Note: on ${n} lines the quantity could not be derived from the invoice — those numbers are estimates. Please check:`,
@@ -268,11 +274,16 @@ async function convertFile(file, force = false) {
   const qtyChecked       = res.headers.get("X-Validation-Qty-Checked")   === "1";
   const totalChecked     = res.headers.get("X-Validation-Total-Checked") === "1";
   // These headers are diagnostics. A malformed or truncated value must never
-  // discard an otherwise good conversion, so parse failures degrade to empty.
+  // discard an otherwise good conversion, so parse failures degrade to empty —
+  // but degrading to [] silently is indistinguishable from "nothing to report",
+  // which would suppress a warning using the very failure that should raise it.
+  // `degraded` records that, so the UI can say the diagnostics are unavailable
+  // rather than implying everything was clean.
+  let degraded = false;
   const parseHeader = (raw, decode) => {
     if (!raw) return [];
     try { return JSON.parse(decode ? decodeURIComponent(raw) : raw); }
-    catch { return []; }
+    catch { degraded = true; return []; }
   };
   const preview          = parseHeader(res.headers.get("X-Preview"), true);
   const unparsedItemNos  = parseHeader(res.headers.get("X-Unparsed-Items"), false);
@@ -289,9 +300,15 @@ async function convertFile(file, force = false) {
   const noWeightItems    = parseHeader(res.headers.get("X-NoWeight-Items"), false);
   const noWeightCount    = parseInt(res.headers.get("X-NoWeight-Count") || "0", 10) || noWeightItems.length;
   // Invoice lines, as opposed to `qty` which is the total piece count.
-  const lineCount        = parseInt(res.headers.get("X-Line-Count") || "0", 10);
+  // undefined, not 0: PreviewTable falls back to the preview length otherwise,
+  // which makes "+N more rows" disappear entirely on a long invoice.
+  const lineCountRaw     = res.headers.get("X-Line-Count");
+  const lineCount        = lineCountRaw ? parseInt(lineCountRaw, 10) : undefined;
+  // The server sends a preview whenever there are rows; its absence alongside a
+  // non-empty conversion means the header was dropped or unreadable.
+  if (!preview.length && qty > 0) degraded = true;
   const blob             = await res.blob();
-  return { blob, qty, total, checked, qtyChecked, totalChecked, lineCount, preview,
+  return { blob, qty, total, checked, qtyChecked, totalChecked, lineCount, preview, degraded,
     unparsedItemNos, unparsedCount, uncertainItems, uncertainCount, excelTotal, driftItems, driftCount,
     noWeightItems, noWeightCount };
 }
@@ -564,7 +581,7 @@ export default function App() {
 // each looking at a different mix of isPartial / checked / qty / uncertainCount.
 // They disagreed: the same file could be amber in the badge, green in the
 // history and unlabelled in the ZIP. Everything now routes through here.
-const TRUST_ORDER = ["error", "partial", "unchecked", "drift", "noweight", "uncertain", "gaps", "nodata"];
+const TRUST_ORDER = ["error", "partial", "unchecked", "drift", "noweight", "uncertain", "gaps", "degraded", "nodata"];
 
 function trustOf(r) {
   if (!r)                     return { ok: false, kind: "error" };
@@ -575,6 +592,8 @@ function trustOf(r) {
   if (r.noWeightCount > 0)    return { ok: false, kind: "noweight" };
   if (r.uncertainCount > 0)   return { ok: false, kind: "uncertain" };
   if (r.unparsedCount > 0)    return { ok: false, kind: "gaps" };
+  // Diagnostics unreadable: the absence of warnings proves nothing here.
+  if (r.degraded)             return { ok: false, kind: "degraded" };
   // No quantity means the validation headers never arrived; the conversion
   // cannot be vouched for even though the response was a 200.
   if (!r.qty)                 return { ok: false, kind: "nodata" };
@@ -970,7 +989,24 @@ function ExcelDriftWarning({ result, t }) {
   );
 }
 
-function SilentGapWarning({ unparsedItemNos, t }) {
+// The diagnostic headers were unreadable. Say so: an empty list would otherwise
+// read as "nothing to report" — the same appearance as a clean conversion.
+function DegradedWarning({ result, t }) {
+  if (!result.degraded) return null;
+  return (
+    <div style={{
+      background: T.panelDeep, border: `1px solid #5a4400`, borderRadius: 8,
+      padding: "0.6rem 0.85rem", marginBottom: "0.75rem",
+      display: "flex", alignItems: "flex-start", gap: "0.5rem",
+    }}>
+      <AlertTriangle size={13} color="#c78c00" style={{ marginTop: 2, flexShrink: 0 }} />
+      <p style={{ fontSize: "0.72rem", color: T.textDim, lineHeight: 1.5, margin: 0 }}>{t.degradedNote}</p>
+    </div>
+  );
+}
+
+function SilentGapWarning({ unparsedItemNos, count, t }) {
+  if (!count) return null;
   if (!unparsedItemNos || unparsedItemNos.length === 0) return null;
   return (
     <div style={{
@@ -980,8 +1016,13 @@ function SilentGapWarning({ unparsedItemNos, t }) {
     }}>
       <AlertTriangle size={13} color="#c78c00" style={{ marginTop: 2, flexShrink: 0 }} />
       <p style={{ fontSize: "0.72rem", color: T.textDim, lineHeight: 1.5, margin: 0 }}>
-        {t.silentGapNote(unparsedItemNos.length)}{" "}
-        <span style={{ fontFamily: "JetBrains Mono, monospace", color: T.textMute }}>{unparsedItemNos.join(", ")}</span>
+        {/* The count is the true total; the list is capped server-side at 40,
+            so counting the list understated it on a large invoice. */}
+        {t.silentGapNote(count)}{" "}
+        <span style={{ fontFamily: "JetBrains Mono, monospace", color: T.textMute }}>
+          {unparsedItemNos.join(", ")}
+          {count > unparsedItemNos.length ? ` +${count - unparsedItemNos.length}` : ""}
+        </span>
       </p>
     </div>
   );
@@ -1034,7 +1075,8 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
             }}>
               <FileDown size={13} /> {t.redownload}
             </button>
-            <SilentGapWarning unparsedItemNos={result.unparsedItemNos} t={t} />
+            <DegradedWarning result={result} t={t} />
+            <SilentGapWarning unparsedItemNos={result.unparsedItemNos} count={result.unparsedCount} t={t} />
             <UncertainQtyWarning items={result.uncertainItems} count={result.uncertainCount} t={t} />
             <ExcelDriftWarning result={result} t={t} />
           </>
@@ -1050,7 +1092,7 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
       {/* totalItems is a line count, not a piece count — passing qty here
           produced "+213 more rows" on a forty-line invoice. */}
       {isOk && result.preview?.length > 0 && (
-        <PreviewTable rows={result.preview} totalItems={result.lineCount || result.preview.length} t={t} />
+        <PreviewTable rows={result.preview} totalItems={result.lineCount} t={t} />
       )}
 
       <div style={{ marginTop: "1.25rem", textAlign: "center" }}>

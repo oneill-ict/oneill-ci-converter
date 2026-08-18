@@ -1143,7 +1143,14 @@ async function handleConvert(req, res) {
     p: it.pricePerPiece,
     t: it.total,
   }));
-  setSafeHeader(res, "X-Preview", encodeURIComponent(JSON.stringify(previewRows)));
+  // Percent-encoding roughly triples accented text, so a full 10-row preview can
+  // approach the header cap. Shrink it rather than let it be dropped silently —
+  // the preview is the user's only sanity check before the file leaves.
+  let previewSent = setSafeHeader(res, "X-Preview", encodeURIComponent(JSON.stringify(previewRows)));
+  for (let n = 5; !previewSent && n >= 1; n = Math.floor(n / 2)) {
+    previewSent = setSafeHeader(res, "X-Preview", encodeURIComponent(JSON.stringify(previewRows.slice(0, n))));
+  }
+  if (!previewSent) res.setHeader("X-Preview-Dropped", "1");
   // xlsxBuffer is already a Node Buffer; wrapping it again copied the whole file.
   return res.status(200).end(xlsxBuffer);
 }
