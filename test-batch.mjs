@@ -94,6 +94,36 @@ function extractCountry(groupCountry) {
   return words[words.length - 1] || trimmed;
 }
 
+// Mirrors readGoodsTotal() in api/convert.js — keep both in sync.
+function readGoodsTotal(flatText) {
+  const CUR = /(?:CHF|EUR|GBP|USD|CAD)/.source;
+
+  let spaced = null;
+  for (const m of flatText.matchAll(new RegExp(`Goods total\\s*(\\d+)\\s+([\\d.,]+)\\s*${CUR}`, "gi"))) spaced = m;
+  if (spaced) return { qty: parseInt(spaced[1], 10), total: parseEuropeanNumber(spaced[2]) };
+
+  let glued = null;
+  for (const m of flatText.matchAll(new RegExp(`Goods total([\\d.,]+)\\s*${CUR}`, "gi"))) glued = m;
+  if (!glued) return { qty: null, total: null };
+
+  const tail  = flatText.slice(glued.index);
+  const subM  = new RegExp(`Subtotal([\\d.,]+)\\s*${CUR}`, "i").exec(tail);
+  const discM = new RegExp(`Discount([\\d.,]+)\\s*${CUR}`, "i").exec(tail);
+  if (!subM) return { qty: null, total: null };
+  const target = round2(parseEuropeanNumber(subM[1]) + (discM ? parseEuropeanNumber(discM[1]) : 0));
+
+  const run = glued[1];
+  for (let i = 1; i < run.length; i++) {
+    const qStr = run.slice(0, i), aStr = run.slice(i);
+    if (!/^\d+$/.test(qStr)) break;
+    if (!/^(0|[1-9]\d{0,2})(\.\d{3})*,\d{2}$/.test(aStr)) continue;
+    if (Math.abs(parseEuropeanNumber(aStr) - target) < 0.005) {
+      return { qty: parseInt(qStr, 10), total: parseEuropeanNumber(aStr) };
+    }
+  }
+  return { qty: null, total: target };
+}
+
 function parseInvoiceText(text) {
   const currencyM = /\b(CHF|EUR|GBP|USD|CAD)\b/.exec(text);
   const currency  = currencyM ? currencyM[1] : "CHF";
@@ -114,12 +144,7 @@ function parseInvoiceText(text) {
     ? flatText.slice(itemsStart, itemsEnd)
     : itemsStart >= 0 ? flatText.slice(itemsStart) : flatText;
 
-  let lastGtM = null;
-  for (const m of flatText.matchAll(/Goods total\s*(\d+)\s+([\d.,]+)\s*(?:CHF|EUR|GBP|USD|CAD)/gi)) {
-    lastGtM = m;
-  }
-  const expectedQty   = lastGtM ? parseInt(lastGtM[1], 10) : null;
-  const expectedTotal = lastGtM ? parseEuropeanNumber(lastGtM[2]) : null;
+  const { qty: expectedQty, total: expectedTotal } = readGoodsTotal(flatText);
 
   const splitRe = /(?<![\dN])(?=\d{7,8}(?!\d))|(?<!\d)(?=N\d{5,7}(?!\d))|(?<=(?:CHF|EUR|GBP|USD|CAD) )(?=\d{4}[A-Z])|(?<=(?:CHF|EUR|GBP|USD|CAD) )(?=ONS[A-Z])/g;
   const blocks  = itemsText.split(splitRe).filter(b => b.trim());
@@ -248,6 +273,9 @@ const pdfs = findPdfs(BASE).sort();
 console.log(`\nBatch testing ${pdfs.length} PDFs\n${"─".repeat(80)}`);
 
 const results = { pass: [], fail: [], skip: [], error: [] };
+// Invoices whose grand total could not be read are validated against nothing —
+// they pass by default. Track them so that coverage can never silently regress.
+const unchecked = [];
 
 for (const pdfPath of pdfs) {
   const label = pdfPath.replace(BASE + "\\", "").replace(/\\/g, "/");
@@ -261,6 +289,8 @@ for (const pdfPath of pdfs) {
       results.skip.push(label);
       continue;
     }
+
+    if (r.expectedQty == null || r.expectedTotal == null) unchecked.push(label);
 
     if (r.valid) {
       const unparsed = r.missedRows.length > 0 ? ` [${r.missedRows.length} missed]` : "";
@@ -285,6 +315,13 @@ for (const pdfPath of pdfs) {
 
 console.log(`\n${"─".repeat(80)}`);
 console.log(`PASS: ${results.pass.length}  FAIL: ${results.fail.length}  SKIP: ${results.skip.length}  ERROR: ${results.error.length}`);
+
+const checkedCount = results.pass.length + results.fail.length - unchecked.length;
+console.log(`VALIDATED: ${checkedCount}/${results.pass.length + results.fail.length} parsed invoices had a readable grand total`);
+if (unchecked.length > 0) {
+  console.log(`\n⚠️  ${unchecked.length} invoice(s) validated against NOTHING — a dropped line here goes unnoticed:`);
+  for (const label of unchecked) console.log(`     ${label}`);
+}
 
 if (results.fail.length > 0) {
   console.log(`\n── Failures (detail) ──`);
