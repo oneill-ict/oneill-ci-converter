@@ -281,7 +281,9 @@ async function convertFile(file, force = false) {
       e.parsedTotal      = err.parsedTotal;
       e.expectedTotal    = err.expectedTotal;
       e.missedRows       = err.missedRows       || [];
-      e.unparsedItemNos  = err.unparsedItemNos  || [];
+      // Normalise at the boundary so no component downstream has to know which
+      // shape it got. Three consumers each guessed; one of them guessed wrong.
+      e.unparsedItemNos  = (err.unparsedItemNos || []).map(r => typeof r === "string" ? r : r.itemNo);
       e.uncertainLines   = err.uncertainLines   || [];
       e.driftLines       = err.driftLines       || [];
       e.noWeightLines    = err.noWeightLines    || [];
@@ -447,6 +449,10 @@ export default function App() {
             autoBlob    = forced.blob;
             autoPreview = forced.preview;
             row.blob = autoBlob; row.preview = autoPreview;
+            // Carry the forced conversion's diagnostics too. Without this the
+            // "diagnostics unreadable" warning could never fire on this path —
+            // the same class of gap the shared warnings block was built to close.
+            row.degraded = forced.degraded;
             // Auto-download carries the status in its name — this file lands in
             // the downloads folder before the warning has even rendered.
             if (pdfs.length === 1) triggerDownload(autoBlob, exportNameFor(row, t));
@@ -907,8 +913,9 @@ function humanReason(raw, t) {
 function PartialWarning({ result, onForceDownload, t }) {
   const [showDetails, setShowDetails] = React.useState(false);
 
-  // unparsedItemNos: item numbers visible in PDF but missing from output (no reason known)
-  const unparsed = (result.unparsedItemNos || []).map(r => typeof r === "string" ? r : r.itemNo);
+  // unparsedItemNos: item numbers visible in PDF but missing from output (no
+  // reason known). Always bare strings — normalised in convertFile.
+  const unparsed = result.unparsedItemNos || [];
   // missedRows: blocks that were found but failed to parse (with reason).
   // "???" means the line was found but its item number could not be read at all —
   // the worst case, and previously the only one filtered out of this list.
@@ -1248,7 +1255,7 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
 
 // Compact version of PartialWarning's item list, for a batch row.
 function BatchMissingItems({ result, t }) {
-  const unparsed = (result.unparsedItemNos || []).map(r => typeof r === "string" ? r : r.itemNo);
+  const unparsed = result.unparsedItemNos || [];   // always strings; see convertFile
   const missed   = result.missedRows || [];
   const named    = unparsed.length > 0 ? unparsed : missed.filter(r => r.itemNo !== "???").map(r => r.itemNo);
   const unnamed  = missed.filter(r => r.itemNo === "???").length;
