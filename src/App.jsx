@@ -30,6 +30,7 @@ const i18n = {
     missedItemsLabel: "Ontbrekend in export",
     missedDetailsLabel: "Reden per item",
     missedReasons: {
+      "no tariff number":          "tariefnummer niet gevonden",
       "no tariff+gr":              "tariefnummer niet gevonden",
       "no item number in block":   "itemnummer niet herkend",
     },
@@ -82,6 +83,7 @@ const i18n = {
     missedItemsLabel: "Missing from export",
     missedDetailsLabel: "Reason per item",
     missedReasons: {
+      "no tariff number":          "tariff number not found",
       "no tariff+gr":              "tariff number not found",
       "no item number in block":   "item number not recognised",
     },

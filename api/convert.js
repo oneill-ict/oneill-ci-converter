@@ -303,24 +303,40 @@ function parseInvoiceText(text) {
       }
     }
 
-    // Tariff number (10 digits) immediately followed by gross weight digits + "gr"
-    // e.g. "6206300090240,00 gr" — no space between tariff and weight in PDF output.
+    // Tariff number (10 digits), normally followed immediately by the per-line
+    // gross weight, e.g. "6206300090240,00 gr" — no space in the PDF output.
+    // One template omits the per-line weight and states it only in the header;
+    // there the quantity follows the tariff directly ("62102000901113,04 EUR").
+    // Requiring the weight meant every line of that template was dropped and the
+    // invoice came back as "no items found". Both layouts are accepted now.
     // Finding tariff FIRST so we can read CHF values after it, ignoring any footer
     // amounts (Goods total, VAT, Total) that may appear later in the same block.
     const tariffGrM = /(\d{10})(\d[\d.]*,\d+)\s*gr/.exec(block);
-    if (!tariffGrM) {
-      missedRows.push({ itemNo, reason: "no tariff+gr", context: block.slice(0, 200).replace(/\s+/g, " ") });
+    let tariffNo, tariffPos, tariffEnd, grossWeight = 0;
+    if (tariffGrM) {
+      tariffNo    = tariffGrM[1];
+      tariffPos   = tariffGrM.index;
+      tariffEnd   = tariffGrM.index + tariffGrM[0].length;
+      grossWeight = parseEuropeanNumber(tariffGrM[2]);
+    } else {
+      // Search past the item number so a long digit run in the code cannot match.
+      const bareM = /(\d{10})(?=\d)/.exec(block.slice(itemNoEnd));
+      if (bareM) {
+        tariffNo  = bareM[1];
+        tariffPos = itemNoEnd + bareM.index;
+        tariffEnd = tariffPos + bareM[0].length;
+      }
+    }
+    if (!tariffNo) {
+      missedRows.push({ itemNo, reason: "no tariff number", context: block.slice(0, 200).replace(/\s+/g, " ") });
       continue;
     }
-    const tariffNo    = tariffGrM[1];
-    const tariffPos   = tariffGrM.index;
-    const grossWeight = parseEuropeanNumber(tariffGrM[2]);
 
     // CHF values immediately after the tariff: combined (qty×price), discount, total.
     // Using first-3-after-tariff instead of last-3-in-block prevents the last item's
     // block from picking up footer CHF amounts (Goods total, Subtotal, VAT, Total)
     // that appear between the last item and SUBTOTAL TARIFF NO.
-    const afterTariffText = block.slice(tariffPos + tariffGrM[0].length);
+    const afterTariffText = block.slice(tariffEnd);
     const chfAfterTariff  = [...afterTariffText.matchAll(/([\d., ]+?)\s*(?:CHF|EUR|GBP)/g)];
     if (chfAfterTariff.length < 3) {
       missedRows.push({ itemNo, reason: `${chfAfterTariff.length} CHF values after tariff`, context: block.slice(0, 200).replace(/\s+/g, " ") });
@@ -334,7 +350,7 @@ function parseInvoiceText(text) {
     // Embedded-item check: if the block tail (after item A's 3rd CHF value) contains
     // another tariff code, a second item is embedded. Split it off so the next loop
     // iteration processes it as its own block.
-    const _tariffBase  = tariffPos + tariffGrM[0].length;
+    const _tariffBase  = tariffEnd;
     const _firstItemEnd = _tariffBase + first3[2].index + first3[2][0].length;
     const _embTail     = block.slice(_firstItemEnd).trimStart();
     if (_embTail.length > 20 && /\d{10}/.test(_embTail)) {

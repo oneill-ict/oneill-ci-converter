@@ -174,15 +174,25 @@ function parseInvoiceText(text) {
     }
 
     const tariffGrM = /(\d{10})(\d[\d.]*,\d+)\s*gr/.exec(block);
-    if (!tariffGrM) {
-      missedRows.push({ itemNo, reason: "no tariff+gr", context: block.slice(0, 150).replace(/\s+/g, " ") });
+    let tariffNo, tariffPos, tariffEnd, grossWeight = 0;
+    if (tariffGrM) {
+      tariffNo    = tariffGrM[1];
+      tariffPos   = tariffGrM.index;
+      tariffEnd   = tariffGrM.index + tariffGrM[0].length;
+      grossWeight = parseEuropeanNumber(tariffGrM[2]);
+    } else {
+      const bareM = /(\d{10})(?=\d)/.exec(block.slice(itemNoEnd));
+      if (bareM) {
+        tariffNo  = bareM[1];
+        tariffPos = itemNoEnd + bareM.index;
+        tariffEnd = tariffPos + bareM[0].length;
+      }
+    }
+    if (!tariffNo) {
+      missedRows.push({ itemNo, reason: "no tariff number", context: block.slice(0, 150).replace(/\s+/g, " ") });
       continue;
     }
-    const tariffNo  = tariffGrM[1];
-    const tariffPos = tariffGrM.index;
-    const grossWeight = parseEuropeanNumber(tariffGrM[2]);
-
-    const afterTariffText = block.slice(tariffPos + tariffGrM[0].length);
+    const afterTariffText = block.slice(tariffEnd);
     const chfAfterTariff  = [...afterTariffText.matchAll(/([\d., ]+?)\s*(?:CHF|EUR|GBP|USD|CAD)/g)];
     if (chfAfterTariff.length < 3) {
       missedRows.push({ itemNo, reason: `${chfAfterTariff.length} currency values after tariff`, context: block.slice(0, 150).replace(/\s+/g, " ") });
@@ -193,7 +203,7 @@ function parseInvoiceText(text) {
     const lineDiscount = parseEuropeanNumber(first3[1][1].trim());
     const lineTotal    = parseEuropeanNumber(first3[2][1].trim());
 
-    const _tariffBase   = tariffPos + tariffGrM[0].length;
+    const _tariffBase   = tariffEnd;
     const _firstItemEnd = _tariffBase + first3[2].index + first3[2][0].length;
     const _embTail      = block.slice(_firstItemEnd).trimStart();
     if (_embTail.length > 20 && /\d{10}/.test(_embTail)) {
