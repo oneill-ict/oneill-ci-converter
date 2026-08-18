@@ -392,7 +392,12 @@ function parseInvoiceText(text) {
       // that item's tariff, quantity, price and total while the item itself was
       // still spliced in separately and counted twice.
       const rest    = block.slice(itemNoEnd);
-      const curIdx  = rest.search(/(?:CHF|EUR|GBP|USD|CAD)/);
+      // Only a standalone currency token, not those letters inside a product
+      // name. A plain search would stop at the "CAD" in ARCADE or the "EUR" in
+      // EUROPA, cutting the search region short and dropping the line.
+      // Trailing guard is (?![A-Z]) rather than \b because the flattened text
+      // glues the next amount straight on: "113,04 EUR0,00 EUR".
+      const curIdx  = rest.search(/(?<![A-Z])(?:CHF|EUR|GBP|USD|CAD)(?![A-Z])/);
       const bareM   = /(\d{10})(?=\d)/.exec(curIdx > 0 ? rest.slice(0, curIdx) : rest);
       if (bareM) {
         tariffNo  = bareM[1];
