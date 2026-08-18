@@ -47,16 +47,29 @@ const i18n = {
     warnCount:     (n) => `${n} met waarschuwing`,
     downloadZip:   "Download alle als ZIP",
     shortBy:       (n) => n > 0 ? `${n} te weinig` : `${-n} te veel`,
-    zipSuffixPartial:   "(ONVOLLEDIG)",
-    zipSuffixUnchecked: "(NIET GECONTROLEERD)",
+    trustSuffix: {
+      partial:   "(ONVOLLEDIG)",
+      unchecked: "(NIET GECONTROLEERD)",
+      drift:     "(BEDRAG WIJKT AF)",
+      uncertain: "(AANTAL GESCHAT)",
+      gaps:      "(REGELS ONTBREKEN)",
+      nodata:    "(NIET GECONTROLEERD)",
+    },
+    trustReason: {
+      partial:   "aantal of totaal komt niet overeen met de factuur",
+      unchecked: "het factuurtotaal kon niet worden gelezen",
+      drift:     "het Excel telt niet op tot het bedrag op de factuur",
+      uncertain: "bij een of meer regels is het aantal geschat",
+      gaps:      "een of meer artikelnummers uit de PDF ontbreken",
+      nodata:    "de controlegegevens zijn niet ontvangen",
+    },
     zipReadmeName: "LEES-DIT-EERST.txt",
-    zipReadmeBody: (names) =>
+    zipReadmeBody: (names, legend) =>
       "LET OP\r\n\r\n" +
       "De volgende bestanden in deze ZIP zijn NIET goedgekeurd door de converter.\r\n" +
       "Controleer ze handmatig voordat je ze voor de douane gebruikt:\r\n\r\n" +
       names.map(n => "  - " + n).join("\r\n") + "\r\n\r\n" +
-      "(ONVOLLEDIG)          = aantal of totaal komt niet overeen met de factuur\r\n" +
-      "(NIET GECONTROLEERD)  = het factuurtotaal kon niet worden gelezen\r\n",
+      legend + "\r\n",
     noPdfsFound:   (n) => n === 1
       ? "Dat bestand is geen PDF. Sleep een Commercial Invoice in PDF-formaat."
       : `Geen van die ${n} bestanden is een PDF. Sleep Commercial Invoices in PDF-formaat.`,
@@ -127,16 +140,29 @@ const i18n = {
     warnCount:     (n) => `${n} with warning`,
     downloadZip:   "Download all as ZIP",
     shortBy:       (n) => n > 0 ? `${n} short` : `${-n} too many`,
-    zipSuffixPartial:   "(INCOMPLETE)",
-    zipSuffixUnchecked: "(NOT VERIFIED)",
+    trustSuffix: {
+      partial:   "(INCOMPLETE)",
+      unchecked: "(NOT VERIFIED)",
+      drift:     "(AMOUNT DIFFERS)",
+      uncertain: "(QUANTITY ESTIMATED)",
+      gaps:      "(LINES MISSING)",
+      nodata:    "(NOT VERIFIED)",
+    },
+    trustReason: {
+      partial:   "quantity or total does not match the invoice",
+      unchecked: "the invoice total could not be read",
+      drift:     "the Excel does not add up to the amount on the invoice",
+      uncertain: "the quantity on one or more lines is an estimate",
+      gaps:      "one or more item numbers from the PDF are missing",
+      nodata:    "the validation data was not received",
+    },
     zipReadmeName: "READ-ME-FIRST.txt",
-    zipReadmeBody: (names) =>
+    zipReadmeBody: (names, legend) =>
       "WARNING\r\n\r\n" +
       "The following files in this ZIP were NOT approved by the converter.\r\n" +
       "Check them by hand before using them for customs:\r\n\r\n" +
       names.map(n => "  - " + n).join("\r\n") + "\r\n\r\n" +
-      "(INCOMPLETE)    = quantity or total does not match the invoice\r\n" +
-      "(NOT VERIFIED)  = the invoice total could not be read\r\n",
+      legend + "\r\n",
     noPdfsFound:   (n) => n === 1
       ? "That file is not a PDF. Drop a Commercial Invoice in PDF format."
       : `None of those ${n} files is a PDF. Drop Commercial Invoices in PDF format.`,
@@ -310,31 +336,42 @@ export default function App() {
 
       try {
         const c = await convertFile(file);
-        // Single file: trigger immediate download
-        if (pdfs.length === 1) triggerDownload(c.blob, xlsxName);
-        batch.push({ name: file.name, xlsxName, ...c,
+        const row = { name: file.name, xlsxName, ...c,
           unparsedItemNos: c.unparsedItemNos || [], uncertainItems: c.uncertainItems || [],
           uncertainCount: c.uncertainCount || 0, driftItems: c.driftItems || [], driftCount: c.driftCount || 0,
-          error: null, isPartial: false, file });
+          error: null, isPartial: false, file };
+        // Single file: trigger immediate download, under the status-carrying name
+        if (pdfs.length === 1) triggerDownload(row.blob, exportNameFor(row, t));
+        batch.push(row);
       } catch (e) {
         if (e.isPartial) {
           // Validation mismatch — auto-download the export anyway so the team can continue,
           // then show the warning with details about what was missed.
           let autoBlob = null, autoPreview = [];
-          try {
-            const forced = await convertFile(file, true);
-            autoBlob    = forced.blob;
-            autoPreview = forced.preview;
-            if (pdfs.length === 1) triggerDownload(autoBlob, xlsxName);
-          } catch {}
-          batch.push({
-            name: file.name, xlsxName, blob: autoBlob,
+          const row = {
+            name: file.name, xlsxName, blob: null,
             qty: e.parsedQty, total: e.parsedTotal,
             expectedQty: e.expectedQty, expectedTotal: e.expectedTotal,
             missedRows: e.missedRows || [],
             unparsedItemNos: e.unparsedItemNos || [],
-            preview: autoPreview, error: null, isPartial: true, file,
-          });
+            unparsedCount: (e.unparsedItemNos || []).length,
+            uncertainItems: (e.uncertainLines || []).map(x => x.itemNo),
+            uncertainCount: (e.uncertainLines || []).length,
+            driftItems: (e.driftLines || []).map(x => x.itemNo),
+            driftCount: (e.driftLines || []).length,
+            excelTotal: e.excelTotal,
+            preview: [], error: null, isPartial: true, file,
+          };
+          try {
+            const forced = await convertFile(file, true);
+            autoBlob    = forced.blob;
+            autoPreview = forced.preview;
+            row.blob = autoBlob; row.preview = autoPreview;
+            // Auto-download carries the status in its name — this file lands in
+            // the downloads folder before the warning has even rendered.
+            if (pdfs.length === 1) triggerDownload(autoBlob, exportNameFor(row, t));
+          } catch {}
+          batch.push(row);
         } else {
           batch.push({ name: file.name, xlsxName, blob: null, qty: null, total: null, preview: [], error: e.message, isPartial: false, file });
         }
@@ -344,9 +381,11 @@ export default function App() {
     setResults(batch);
     setPhase("done");
 
-    // Persist successful conversions to history
+    // Persist only conversions that can be vouched for. The old filter allowed
+    // unchecked and uncertain results through, and the history panel then drew
+    // them with a green tick — with no `checked` field stored to correct it.
     const newEntries = batch
-      .filter(r => !r.error && !r.isPartial)
+      .filter(r => trustOf(r).ok)
       .map(r => ({ name: r.xlsxName, qty: r.qty, total: r.total, ts: Date.now() }));
     if (newEntries.length) {
       setHistory(prev => {
@@ -359,43 +398,47 @@ export default function App() {
 
   // Force-download a partial result. If blob is already stored (auto-downloaded), just re-trigger.
   const downloadForce = useCallback(async (r) => {
-    if (r.blob) { triggerDownload(r.blob, r.xlsxName); return; }
+    if (r.blob) { triggerDownload(r.blob, exportNameFor(r, t)); return; }
     setResults(prev => prev.map(p => p === r ? { ...p, forceLoading: true } : p));
     try {
       const { blob, qty, total, preview } = await convertFile(r.file, true);
-      triggerDownload(blob, r.xlsxName);
       // A forced export is unverified by definition — the totals did not
-      // reconcile. Keep `checked: false` so the badge never claims otherwise.
-      setResults(prev => prev.map(p => p === r
-        ? { ...p, blob, qty, total, preview, checked: false, isPartial: false, forceLoading: false }
-        : p));
+      // reconcile. Stay `isPartial` so the mismatch figures and the missing-item
+      // list remain on screen; only the download state changes.
+      const next = { ...r, blob, qty, total, preview, forcedAt: Date.now(), forceLoading: false };
+      triggerDownload(blob, exportNameFor(next, t));
+      setResults(prev => prev.map(p => p === r ? next : p));
     } catch (e) {
+      // Keep isPartial so the mismatch detail is not wiped by a failed retry.
       setResults(prev => prev.map(p => p === r
-        ? { ...p, error: e.message, isPartial: false, forceLoading: false }
+        ? { ...p, forceError: e.message, forceLoading: false }
         : p));
     }
-  }, []);
+  }, [t]);
 
-  const downloadSingle = (r) => triggerDownload(r.blob, r.xlsxName);
+  const downloadSingle = (r) => triggerDownload(r.blob, exportNameFor(r, t));
 
   const downloadZip = async () => {
     const zip = new JSZip();
     // Once the ZIP leaves the browser the on-screen warning is gone, so an
-    // incomplete or unverified export has to carry its status in the filename.
-    // Previously partials were bundled in under the same name as clean ones.
+    // export that cannot be vouched for has to carry its status in the filename.
     const flagged = [];
     for (const r of results) {
       if (!r.blob) continue;
-      const suffix = r.isPartial       ? t.zipSuffixPartial
-                   : r.checked === false ? t.zipSuffixUnchecked
-                   : "";
-      const name = suffix
-        ? r.xlsxName.replace(/\.xlsx$/i, "") + ` ${suffix}.xlsx`
-        : r.xlsxName;
-      if (suffix) flagged.push(name);
+      const name = exportNameFor(r, t);
+      if (name !== r.xlsxName) flagged.push(name);
       zip.file(name, r.blob);
     }
-    if (flagged.length) zip.file(t.zipReadmeName, t.zipReadmeBody(flagged));
+    if (flagged.length) {
+      // Only explain the markers actually present in this ZIP.
+      const kinds  = [...new Set(results.filter(r => r.blob).map(r => trustOf(r).kind))]
+        .filter(k => t.trustSuffix[k]);
+      const legend = kinds
+        .sort((a, b) => TRUST_ORDER.indexOf(a) - TRUST_ORDER.indexOf(b))
+        .map(k => `${t.trustSuffix[k].padEnd(24)} = ${t.trustReason[k]}`)
+        .join("\r\n");
+      zip.file(t.zipReadmeName, t.zipReadmeBody(flagged, legend));
+    }
     const zipBlob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
     triggerDownload(zipBlob, "commercial-invoices.zip");
   };
@@ -408,9 +451,11 @@ export default function App() {
   const onDragOver   = (e) => { e.preventDefault(); setDragging(true); };
   const onDragLeave  = () => setDragging(false);
 
-  const successCount = results.filter(r => !r.error && !r.isPartial).length;
-  const errorCount   = results.filter(r => r.error).length;
-  const partialCount = results.filter(r => r.isPartial).length;
+  // Counted through the same predicate as everything else: "success" means an
+  // export that can be vouched for, not merely one that did not throw.
+  const successCount = results.filter(r => trustOf(r).ok).length;
+  const errorCount   = results.filter(r => trustOf(r).kind === "error").length;
+  const partialCount = results.filter(r => !trustOf(r).ok && trustOf(r).kind !== "error").length;
   const isBatch      = results.length > 1;
   const maxWidth     = phase === "done" && isBatch ? 600 : 500;
 
@@ -495,6 +540,40 @@ export default function App() {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+// ── One place decides whether an export can be trusted ──────────────────────
+// Six surfaces used to re-derive this independently — the badge, the batch row,
+// the ZIP suffix, the history writer, the download buttons and the warnings —
+// each looking at a different mix of isPartial / checked / qty / uncertainCount.
+// They disagreed: the same file could be amber in the badge, green in the
+// history and unlabelled in the ZIP. Everything now routes through here.
+const TRUST_ORDER = ["error", "partial", "unchecked", "drift", "uncertain", "gaps", "nodata"];
+
+function trustOf(r) {
+  if (!r)                     return { ok: false, kind: "error" };
+  if (r.error)                return { ok: false, kind: "error" };
+  if (r.isPartial)            return { ok: false, kind: "partial" };
+  if (r.checked === false)    return { ok: false, kind: "unchecked" };
+  if (r.driftCount > 0)       return { ok: false, kind: "drift" };
+  if (r.uncertainCount > 0)   return { ok: false, kind: "uncertain" };
+  if (r.unparsedCount > 0)    return { ok: false, kind: "gaps" };
+  // No quantity means the validation headers never arrived; the conversion
+  // cannot be vouched for even though the response was a 200.
+  if (!r.qty)                 return { ok: false, kind: "nodata" };
+  return { ok: true, kind: "ok" };
+}
+
+// Filename an export must carry so its status survives leaving the browser.
+// Applied on EVERY download route, not just the ZIP — the auto-download after
+// a mismatch used to land in the downloads folder under a clean name before
+// the warning had even rendered.
+function exportNameFor(r, t) {
+  const { ok, kind } = trustOf(r);
+  if (ok || kind === "error") return r.xlsxName;
+  const suffix = t.trustSuffix[kind];
+  if (!suffix) return r.xlsxName;
+  return r.xlsxName.replace(/\.xlsx$/i, "") + ` ${suffix}.xlsx`;
+}
 
 function triggerDownload(blob, name) {
   const url = URL.createObjectURL(blob);
@@ -876,20 +955,25 @@ function SilentGapWarning({ unparsedItemNos, t }) {
 function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) {
   const isError   = !!result.error;
   const isPartial = result.isPartial;
+  // `isOk` used to mean "did not throw", which drew the green tick over results
+  // with a guessed quantity, a drifting total or missing lines. It now means
+  // "can be vouched for", from the same predicate the filename and ZIP use.
+  const trust     = trustOf(result);
   const isOk      = !isError && !isPartial;
+  const isVouched = trust.ok;
 
   return (
     <div style={{ padding: "0.5rem 0" }}>
       <div style={{ textAlign: "center", marginBottom: "1.25rem" }}>
         <div style={{
           width: 56, height: 56, borderRadius: "50%",
-          background: isError ? T.badSoft : isPartial ? "#1a1200" : T.goodSoft,
-          border: `1px solid ${isError ? T.bad : isPartial ? "#b86e00" : T.good}`,
+          background: isError ? T.badSoft : isVouched ? T.goodSoft : "#1a1200",
+          border: `1px solid ${isError ? T.bad : isVouched ? T.good : "#b86e00"}`,
           display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 1rem",
         }}>
-          {isError   && <AlertCircle   size={26} color={T.bad} />}
-          {isPartial && <AlertTriangle size={26} color="#f59e0b" />}
-          {isOk      && <CheckCircle2  size={26} color={T.good} />}
+          {isError    && <AlertCircle   size={26} color={T.bad} />}
+          {!isError && !isVouched && <AlertTriangle size={26} color="#f59e0b" />}
+          {isVouched  && <CheckCircle2  size={26} color={T.good} />}
         </div>
 
         {isError && (
@@ -905,7 +989,7 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
             <ValidationBadge qty={result.qty} total={result.total} checked={result.checked}
               qtyChecked={result.qtyChecked} totalChecked={result.totalChecked} t={t} />
             <p style={{ fontSize: "0.73rem", color: T.textMute, fontFamily: "JetBrains Mono, monospace", marginBottom: "0.75rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {result.xlsxName}
+              {exportNameFor(result, t)}
             </p>
             <button type="button" onClick={onRedownload} style={{
               background: "transparent", color: T.textMute, border: `1px solid ${T.line}`,
@@ -1002,19 +1086,23 @@ function BatchDoneState({ results, successCount, errorCount, partialCount, onDow
         // button below stay reachable no matter how many files were dropped.
         maxHeight: "min(55vh, 560px)", overflowY: "auto", overflowX: "hidden",
       }}>
-        {results.map((r, i) => (
+        {results.map((r, i) => {
+          // Row chrome comes from the same predicate as the filename and the
+          // history, so a row can no longer read green while its file is flagged.
+          const { ok, kind } = trustOf(r);
+          return (
           <div key={i}>
             <div style={{
               background: T.panelDeep,
-              border: `1px solid ${r.error ? T.bad : r.isPartial ? "#b86e00" : T.line}`,
+              border: `1px solid ${kind === "error" ? T.bad : ok ? T.line : "#b86e00"}`,
               borderRadius: 10, padding: "0.6rem 0.9rem",
               display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "0.75rem",
             }}>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                  {r.error    && <AlertCircle   size={13} color={T.bad} />}
-                  {r.isPartial && <AlertTriangle size={13} color="#f59e0b" />}
-                  {!r.error && !r.isPartial && <CheckCircle2 size={13} color={T.good} />}
+                  {kind === "error" && <AlertCircle   size={13} color={T.bad} />}
+                  {!ok && kind !== "error" && <AlertTriangle size={13} color="#f59e0b" />}
+                  {ok && <CheckCircle2 size={13} color={T.good} />}
                   <span style={{ fontSize: "0.78rem", color: T.text, fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {r.xlsxName || r.name}
                   </span>
@@ -1031,15 +1119,16 @@ function BatchDoneState({ results, successCount, errorCount, partialCount, onDow
                     <BatchMissingItems result={r} t={t} />
                   </>
                 )}
-                {!r.error && !r.isPartial && r.qty && (
+                {!r.error && !r.isPartial && (
                   <p style={{
                     fontSize: "0.7rem", marginTop: "0.2rem", marginLeft: 17,
-                    color: r.checked === false ? "#f59e0b" : T.good,
+                    color: ok ? T.good : "#f59e0b",
                   }}>
-                    {r.checked === false ? "⚠" : "✓"} {r.qty} {t.rows} · CHF {fmtCHF(r.total)}
-                    {r.checked === false && ` · ${t.validUnchecked}`}
+                    {ok ? "✓" : "⚠"} {r.qty || 0} {t.rows} · CHF {fmtCHF(r.total)}
+                    {!ok && ` · ${t.trustReason[kind]}`}
                   </p>
                 )}
+                {!r.error && !r.isPartial && !ok && <BatchMissingItems result={r} t={t} />}
               </div>
               <div style={{ display: "flex", gap: "0.4rem", flexShrink: 0 }}>
                 {r.isPartial && (
@@ -1065,11 +1154,12 @@ function BatchDoneState({ results, successCount, errorCount, partialCount, onDow
               </div>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center", flexWrap: "wrap" }}>
-        {successCount > 1 && (
+        {results.filter(r => r.blob).length > 1 && (
           <button type="button" onClick={onDownloadZip} style={{
             background: T.brand, color: "#071520", border: "none", borderRadius: 10,
             padding: "0.6rem 1.25rem", fontFamily: "Inter, sans-serif",
