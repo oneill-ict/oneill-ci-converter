@@ -144,7 +144,10 @@ function extractCountry(groupCountry) {
 // A well-formed European amount: "0,00", "1.155,47", "500,00", "913304,16".
 // Rejects a spurious leading zero ("01.155,47"), which is what keeps the split
 // of a glued run unique.
-const AMOUNT_RE = /^(?:0|[1-9]\d{0,2}(?:\.\d{3})*|[1-9]\d*),\d{2}$/;
+// The optional leading minus covers credit notes, where the goods total and the
+// subtotal are negative. Without it the reader refused and validation was
+// skipped entirely on every credit note.
+const AMOUNT_RE = /^-?(?:0|[1-9]\d{0,2}(?:\.\d{3})*|[1-9]\d*),\d{2}$/;
 
 function readGoodsTotal(flatText) {
   const CUR = /(?:CHF|EUR|GBP|USD|CAD)/.source;
@@ -154,7 +157,10 @@ function readGoodsTotal(flatText) {
   // past this point could read "Subtotal420292989089,10" and set the expected total
   // to 420 billion — a guaranteed false mismatch on a perfectly parsed invoice.
   const tariffTableAt = flatText.toLowerCase().indexOf("subtotal tariff no.");
-  const zone = tariffTableAt >= 0 ? flatText.slice(0, tariffTableAt) : flatText;
+  let zone = tariffTableAt >= 0 ? flatText.slice(0, tariffTableAt) : flatText;
+  // If the tariff breakdown happens to precede the footer, cutting at it would
+  // leave no goods total at all. Fall back to the whole text rather than refuse.
+  if (!/Goods total/i.test(zone)) zone = flatText;
 
   // One pass over both layouts, taking the LAST occurrence. Trying the spaced
   // layout first across the whole document let a spaced per-page subtotal beat a
@@ -162,7 +168,8 @@ function readGoodsTotal(flatText) {
   //   spaced: "Goods total226 8.429,10 CHF"   → two runs
   //   glued:  "Goods total2913.304,16 EUR"    → one run
   let last = null;
-  for (const m of zone.matchAll(new RegExp(`Goods total\\s*([\\d.,]+)(?:\\s+([\\d.,]+))?\\s*${CUR}`, "gi"))) last = m;
+  // Hyphens allowed inside the run: a glued credit note reads "Goods total29-3.304,16".
+  for (const m of zone.matchAll(new RegExp(`Goods total\\s*([-\\d.,]+)(?:\\s+(-?[\\d.,]+))?\\s*${CUR}`, "gi"))) last = m;
   if (!last) return { qty: null, total: null };
 
   if (last[2] !== undefined) {
@@ -174,12 +181,12 @@ function readGoodsTotal(flatText) {
   // ("Subtotal  12.750,23") — requiring a digit immediately after the label made
   // this whole branch inert on exactly that combination.
   const tail = zone.slice(last.index);
-  const subM = new RegExp(`Subtotal\\s*([\\d.,]+)\\s*${CUR}`, "i").exec(tail);
+  const subM = new RegExp(`Subtotal\\s*(-?[\\d.,]+)\\s*${CUR}`, "i").exec(tail);
   if (!subM) return { qty: null, total: null };
   // Only a Discount sitting between the goods total and the subtotal belongs to
   // this footer. Scanning the whole tail also picked up an unrelated discount
   // printed after "Total", inflating the target and forcing a false mismatch.
-  const discM = new RegExp(`Discount\\s*([\\d.,]+)\\s*${CUR}`, "i").exec(tail.slice(0, subM.index));
+  const discM = new RegExp(`Discount\\s*(-?[\\d.,]+)\\s*${CUR}`, "i").exec(tail.slice(0, subM.index));
   const target = round2(parseEuropeanNumber(subM[1]) + (discM ? parseEuropeanNumber(discM[1]) : 0));
 
   // Split the run so the amount equals the target.

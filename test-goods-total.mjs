@@ -40,6 +40,23 @@ const CASES = [
    "Goods total2913304,16 EUR Subtotal3304,16 EUR",
    { qty: 291, total: 3304.16 }],
 
+  // ── Credit notes ──────────────────────────────────────────────────────────
+  ["credit note, glued",
+   "Goods total29-3.304,16 EUR Subtotal-3.304,16 EUR",
+   { qty: 29, total: -3304.16 }],
+  ["credit note, spaced",
+   "Goods total29 -3.304,16 EUR Subtotal-3.304,16 EUR",
+   { qty: 29, total: -3304.16 }],
+  ["credit note with a discount line",
+   "Goods total15-487,34 EUR Discount-87,34 EUR Subtotal-400,00 EUR",
+   { qty: 15, total: -487.34 }],
+  ["credit note without thousands separator",
+   "Goods total4-399,98 EUR Subtotal-399,98 EUR",
+   { qty: 4, total: -399.98 }],
+  ["tariff table before the footer falls back to the whole text",
+   "SUBTOTAL TARIFF NO. Tariff No.Subtotal 420292989089,10CHF Goods total226 8.429,10 CHF Subtotal8.429,10 CHF",
+   { qty: 226, total: 8429.10 }],
+
   // ── Must refuse rather than guess ─────────────────────────────────────────
   ["no Subtotal to pin the amount",
    "Goods total2913.304,16 EUR VAT0,00 EUR",
