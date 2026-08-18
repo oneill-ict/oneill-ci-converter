@@ -99,7 +99,8 @@ function extractCountry(groupCountry) {
 }
 
 // Mirrors readGoodsTotal() in api/convert.js — keep both in sync.
-export const AMOUNT_RE = /^-?(?:0|[1-9]\d{0,2}(?:\.\d{3})*|[1-9]\d*),\d{2}$/;
+export const AMOUNT_RE = /^(?:0|[1-9]\d{0,2}(?:\.\d{3})*|[1-9]\d*),\d{2}$/;
+const NEGATIVE_AMOUNT_RE = /-\d[\d.]*,\d{2}/;
 
 export function readGoodsTotal(flatText) {
   const CUR = /(?:CHF|EUR|GBP|USD|CAD)/.source;
@@ -108,12 +109,20 @@ export function readGoodsTotal(flatText) {
   let zone = tariffTableAt >= 0 ? flatText.slice(0, tariffTableAt) : flatText;
   if (!/Goods total/i.test(zone)) zone = flatText;
 
+  let gtPos = -1;
+  for (const m of zone.matchAll(/Goods total/gi)) gtPos = m.index;
+  if (gtPos >= 0 && NEGATIVE_AMOUNT_RE.test(zone.slice(gtPos, gtPos + 300))) {
+    return { qty: null, total: null, creditNote: true };
+  }
+
   let last = null;
-  for (const m of zone.matchAll(new RegExp(`Goods total\\s*([-\\d.,]+)(?:\\s+(-?[\\d.,]+))?\\s*${CUR}`, "gi"))) last = m;
+  for (const m of zone.matchAll(new RegExp(`Goods total\\s*(-?[\\d.,]+)(?:\\s+(-?[\\d.,]+))?\\s*${CUR}`, "gi"))) last = m;
   if (!last) return { qty: null, total: null };
 
   if (last[2] !== undefined) {
-    return { qty: parseInt(last[1], 10), total: parseEuropeanNumber(last[2]) };
+    const q = parseInt(last[1], 10);
+    if (!Number.isFinite(q)) return { qty: null, total: null };
+    return { qty: q, total: parseEuropeanNumber(last[2]) };
   }
 
   const tail = zone.slice(last.index);
@@ -213,7 +222,7 @@ function parseInvoiceText(text) {
       continue;
     }
     const afterTariffText = block.slice(tariffEnd);
-    const chfAfterTariff  = [...afterTariffText.matchAll(/([\d., ]+?)\s*(?:CHF|EUR|GBP|USD|CAD)/g)];
+    const chfAfterTariff  = [...afterTariffText.matchAll(/([\d., ]+?)\s*(?<![A-Z])(?:CHF|EUR|GBP|USD|CAD)(?![A-Z])/g)];
     if (chfAfterTariff.length < 3) {
       missedRows.push({ itemNo, reason: `${chfAfterTariff.length} currency values after tariff`, context: block.slice(0, 150).replace(/\s+/g, " ") });
       continue;
