@@ -83,7 +83,12 @@ function parseQtyPrice(combined, totalCHF, discountCHF = 0) {
 function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
   const s        = combined.trim();
   const commaIdx = s.indexOf(",");
-  if (commaIdx < 0) return { qty: parseInt(s, 10), price: 0, discMult: 1 };
+  // No comma means there is nothing to split: the whole run is taken as the
+  // quantity and the price is forced to 0. That is the most degenerate result
+  // this function can produce, so it must report the worst possible diff —
+  // omitting it made `undefined > QTY_SPLIT_TOLERANCE` false and marked this
+  // exact case as certain.
+  if (commaIdx < 0) return { qty: parseInt(s, 10), price: 0, discMult: 1, diff: Infinity };
   const intPart  = s.slice(0, commaIdx);
   const decPart  = s.slice(commaIdx + 1).trim();
   const target   = round2(totalCHF + discountCHF);
@@ -490,7 +495,14 @@ function parseInvoiceText(text) {
     // `valid` alone is ambiguous: totalOk/qtyOk default to true when there is
     // nothing to compare against. `checked` says whether a comparison actually
     // happened, so the UI can distinguish "verified" from "not verified".
-    checked: expectedQty !== null || expectedTotal !== null,
+    // Per axis, because the two checks guard different failures: the total
+    // catches dropped or duplicated lines, the quantity catches a wrong
+    // qty/price split on a line whose total is right. `||` used to report
+    // "checked" when only the total axis had run, so the one check that can
+    // catch a bad split was silently skipped behind a green badge.
+    qtyChecked:   expectedQty   !== null,
+    totalChecked: expectedTotal !== null,
+    checked: expectedQty !== null && expectedTotal !== null,
     parsedQty, parsedTotal, expectedQty, expectedTotal,
     totalOk, qtyOk, repairs, missedRows,
     // Lines whose quantity/price split could not be reconciled with the line
@@ -1020,6 +1032,10 @@ async function handleConvert(req, res) {
   // Whether the totals were actually compared against the invoice footer.
   // Without this the UI cannot tell a verified result from an unverified one.
   res.setHeader("X-Validation-Checked",        v?.checked ? "1" : "0");
+  // Which axes actually ran, so the UI can say "total verified, quantity not"
+  // instead of collapsing a half-check into a full pass.
+  res.setHeader("X-Validation-Qty-Checked",    v?.qtyChecked   ? "1" : "0");
+  res.setHeader("X-Validation-Total-Checked",  v?.totalChecked ? "1" : "0");
   // Number of invoice LINES, as distinct from the piece count above. The UI used
   // the piece count to label rows, producing "+213 more rows" on a 40-line invoice.
   res.setHeader("X-Line-Count",                String(invoice.items.length));
