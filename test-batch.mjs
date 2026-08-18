@@ -183,7 +183,7 @@ function parseInvoiceText(text) {
     }
 
     const tariffGrM = /(\d{10})(\d[\d.]*,\d+)\s*gr/.exec(block);
-    let tariffNo, tariffPos, tariffEnd, grossWeight = 0;
+    let tariffNo, tariffPos, tariffEnd, grossWeight = null;
     if (tariffGrM) {
       tariffNo    = tariffGrM[1];
       tariffPos   = tariffGrM.index;
@@ -282,6 +282,7 @@ function parseInvoiceText(text) {
     currency, items, missedRows,
     expectedQty, expectedTotal, parsedQty, parsedTotal,
     totalOk, qtyOk, excelOk, excelTotal, driftLines,
+    noWeightLines: items.filter(i => i.grossWeight == null).map(i => i.itemNo),
     valid: totalOk && qtyOk && excelOk,
     repairs,
     uncertainLines: items.filter(i => i._qtyUncertain).map(i => i.itemNo),
@@ -342,6 +343,10 @@ for (const pdfPath of pdfs) {
       // recompute to a different figure than the PDF states.
       if (r.driftLines.length > 0) {
         console.log(`         ⚠ excel total ${r.excelTotal} vs stated ${r.parsedTotal}; drifting line(s): ${r.driftLines.slice(0, 8).join(", ")}`);
+      }
+      // Gross weight is a customs-declared field; a blank must be visible.
+      if (r.noWeightLines.length > 0) {
+        console.log(`         ⚠ no gross weight on ${r.noWeightLines.length} line(s): ${r.noWeightLines.slice(0, 6).join(", ")}`);
       }
       results.pass.push(label);
     } else {

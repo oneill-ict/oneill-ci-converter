@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from "react";
+﻿import React, { useState, useRef, useCallback, useEffect } from "react";
 import { Upload, CheckCircle2, AlertCircle, Loader2, FileDown, Archive, AlertTriangle, Clock, Trash2 } from "lucide-react";
 import JSZip from "jszip";
 import { T } from "./lib/theme.js";
@@ -51,6 +51,7 @@ const i18n = {
       partial:   "(ONVOLLEDIG)",
       unchecked: "(NIET GECONTROLEERD)",
       drift:     "(BEDRAG WIJKT AF)",
+      noweight:  "(GEWICHT ONTBREEKT)",
       uncertain: "(AANTAL GESCHAT)",
       gaps:      "(REGELS ONTBREKEN)",
       nodata:    "(NIET GECONTROLEERD)",
@@ -59,6 +60,7 @@ const i18n = {
       partial:   "aantal of totaal komt niet overeen met de factuur",
       unchecked: "het factuurtotaal kon niet worden gelezen",
       drift:     "het Excel telt niet op tot het bedrag op de factuur",
+      noweight:  "bij een of meer regels ontbreekt het brutogewicht",
       uncertain: "bij een of meer regels is het aantal geschat",
       gaps:      "een of meer artikelnummers uit de PDF ontbreken",
       nodata:    "de controlegegevens zijn niet ontvangen",
@@ -144,6 +146,7 @@ const i18n = {
       partial:   "(INCOMPLETE)",
       unchecked: "(NOT VERIFIED)",
       drift:     "(AMOUNT DIFFERS)",
+      noweight:  "(WEIGHT MISSING)",
       uncertain: "(QUANTITY ESTIMATED)",
       gaps:      "(LINES MISSING)",
       nodata:    "(NOT VERIFIED)",
@@ -152,6 +155,7 @@ const i18n = {
       partial:   "quantity or total does not match the invoice",
       unchecked: "the invoice total could not be read",
       drift:     "the Excel does not add up to the amount on the invoice",
+      noweight:  "the gross weight is missing on one or more lines",
       uncertain: "the quantity on one or more lines is an estimate",
       gaps:      "one or more item numbers from the PDF are missing",
       nodata:    "the validation data was not received",
@@ -272,11 +276,15 @@ async function convertFile(file, force = false) {
   const excelTotal       = parseFloat(res.headers.get("X-Excel-Total") || "0");
   const driftItems       = parseHeader(res.headers.get("X-Drift-Items"), false);
   const driftCount       = parseInt(res.headers.get("X-Drift-Count") || "0", 10) || driftItems.length;
+  // Lines with no gross weight — a customs-declared field left blank.
+  const noWeightItems    = parseHeader(res.headers.get("X-NoWeight-Items"), false);
+  const noWeightCount    = parseInt(res.headers.get("X-NoWeight-Count") || "0", 10) || noWeightItems.length;
   // Invoice lines, as opposed to `qty` which is the total piece count.
   const lineCount        = parseInt(res.headers.get("X-Line-Count") || "0", 10);
   const blob             = await res.blob();
   return { blob, qty, total, checked, qtyChecked, totalChecked, lineCount, preview,
-    unparsedItemNos, unparsedCount, uncertainItems, uncertainCount, excelTotal, driftItems, driftCount };
+    unparsedItemNos, unparsedCount, uncertainItems, uncertainCount, excelTotal, driftItems, driftCount,
+    noWeightItems, noWeightCount };
 }
 
 // ── App ─────────────────────────────────────────────────────────────────────
@@ -547,7 +555,7 @@ export default function App() {
 // each looking at a different mix of isPartial / checked / qty / uncertainCount.
 // They disagreed: the same file could be amber in the badge, green in the
 // history and unlabelled in the ZIP. Everything now routes through here.
-const TRUST_ORDER = ["error", "partial", "unchecked", "drift", "uncertain", "gaps", "nodata"];
+const TRUST_ORDER = ["error", "partial", "unchecked", "drift", "noweight", "uncertain", "gaps", "nodata"];
 
 function trustOf(r) {
   if (!r)                     return { ok: false, kind: "error" };
@@ -555,6 +563,7 @@ function trustOf(r) {
   if (r.isPartial)            return { ok: false, kind: "partial" };
   if (r.checked === false)    return { ok: false, kind: "unchecked" };
   if (r.driftCount > 0)       return { ok: false, kind: "drift" };
+  if (r.noWeightCount > 0)    return { ok: false, kind: "noweight" };
   if (r.uncertainCount > 0)   return { ok: false, kind: "uncertain" };
   if (r.unparsedCount > 0)    return { ok: false, kind: "gaps" };
   // No quantity means the validation headers never arrived; the conversion

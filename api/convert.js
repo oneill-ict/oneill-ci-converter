@@ -349,7 +349,10 @@ function parseInvoiceText(text) {
     // Finding tariff FIRST so we can read CHF values after it, ignoring any footer
     // amounts (Goods total, VAT, Total) that may appear later in the same block.
     const tariffGrM = /(\d{10})(\d[\d.]*,\d+)\s*gr/.exec(block);
-    let tariffNo, tariffPos, tariffEnd, grossWeight = 0;
+    // null, not 0: this template states the weight only in the header, and a
+    // declared 0 kg reads as a fact rather than a gap. Lines that end up null
+    // are collected and reported instead of quietly shipping a zero.
+    let tariffNo, tariffPos, tariffEnd, grossWeight = null;
     if (tariffGrM) {
       tariffNo    = tariffGrM[1];
       tariffPos   = tariffGrM.index;
@@ -487,6 +490,12 @@ function parseInvoiceText(text) {
     .map(i => ({ itemNo: i.itemNo, item: i.item, stated: i.total, computed: i.computedTotal }));
   const excelOk = expectedTotal === null || Math.abs(excelTotal - expectedTotal) < 0.10;
 
+  // Lines with no per-line gross weight. Gross weight is a customs-declared
+  // field, so an unknown must be visible rather than shipped as 0.
+  const noWeightLines = invoice.items
+    .filter(i => i.grossWeight === null || i.grossWeight === undefined)
+    .map(i => i.itemNo);
+
   // Find item numbers present in itemsText but absent from parsed results — diagnostic.
   // Groups: (1) 7-8 digit, (2) N-prefix, (3) 4digit+letter no-space, (4) 4digit space variant, (5) ONS-prefix
   const parsedItemNos = new Set(invoice.items.map(i => i.itemNo));
@@ -509,7 +518,7 @@ function parseInvoiceText(text) {
     // excelOk is part of the verdict: a workbook whose own total disagrees with
     // the invoice is a failed conversion, however well the parse went.
     valid: totalOk && qtyOk && excelOk,
-    excelTotal, excelOk, driftLines,
+    excelTotal, excelOk, driftLines, noWeightLines,
     // `valid` alone is ambiguous: totalOk/qtyOk default to true when there is
     // nothing to compare against. `checked` says whether a comparison actually
     // happened, so the UI can distinguish "verified" from "not verified".
@@ -733,7 +742,9 @@ async function buildExcel(invoice) {
     cd(4,  item.colourNo,      { alignment: { horizontal: "left" } });
     cd(5,  item.country);
     cd(6,  item.tariffNo,      { alignment: { horizontal: "left" } });
-    cd(7,  item.grossWeight,   { numFmt: "#,##0.00", alignment: { horizontal: "right" } });
+    // Empty rather than 0 when the invoice does not state a per-line weight —
+    // a zero here would read as a declared weight of nothing.
+    cd(7,  item.grossWeight ?? "", { numFmt: "#,##0.00", alignment: { horizontal: "right" } });
     cd(8,  item.quantity,      { numFmt: "#,##0",    alignment: { horizontal: "right" } });
     cd(9,  item.pricePerPiece, { numFmt: "#,##0.00", alignment: { horizontal: "right" } });
     cd(10, item.discount,      { numFmt: "#,##0.00", alignment: { horizontal: "right" } });
@@ -1087,6 +1098,11 @@ async function handleConvert(req, res) {
   if (drift.length > 0) {
     res.setHeader("X-Drift-Count", String(drift.length));
     setSafeHeader(res, "X-Drift-Items", JSON.stringify(drift.slice(0, 40).map(r => r.itemNo)));
+  }
+  const noWeight = v?.noWeightLines || [];
+  if (noWeight.length > 0) {
+    res.setHeader("X-NoWeight-Count", String(noWeight.length));
+    setSafeHeader(res, "X-NoWeight-Items", JSON.stringify(noWeight.slice(0, 40)));
   }
   // First-10-rows preview so the frontend can show a table before confirming download
   const previewRows = invoice.items.slice(0, 10).map(it => ({
