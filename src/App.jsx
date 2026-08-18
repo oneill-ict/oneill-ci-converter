@@ -26,7 +26,11 @@ const i18n = {
     newInvoice:    "Nieuwe factuur converteren",
     newInvoices:   "Nieuwe facturen",
     checkResults:  "Controleer de resultaten",
-    mismatchTitle: "Aantal stuks komt niet overeen",
+    mismatchTitle: (axis) =>
+      axis === "excel" ? "Het Excel telt niet op tot het factuurbedrag"
+    : axis === "total" ? "Bedrag komt niet overeen met de factuur"
+    :                    "Aantal stuks komt niet overeen",
+    fromTheExcel:  "(zoals het Excel het optelt)",
     mismatchFound: "Gevonden:",
     mismatchExp:   "Verwacht:",
     missedItemsLabel: "Ontbrekend in export",
@@ -135,7 +139,11 @@ const i18n = {
     newInvoice:    "Convert new invoice",
     newInvoices:   "New invoices",
     checkResults:  "Check the results",
-    mismatchTitle: "Piece count mismatch",
+    mismatchTitle: (axis) =>
+      axis === "excel" ? "The Excel does not add up to the invoice amount"
+    : axis === "total" ? "Amount does not match the invoice"
+    :                    "Piece count mismatch",
+    fromTheExcel:  "(as the Excel adds up)",
     mismatchFound: "Found:",
     mismatchExp:   "Expected:",
     missedItemsLabel: "Missing from export",
@@ -272,6 +280,14 @@ async function convertFile(file, force = false) {
       e.expectedTotal    = err.expectedTotal;
       e.missedRows       = err.missedRows       || [];
       e.unparsedItemNos  = err.unparsedItemNos  || [];
+      e.uncertainLines   = err.uncertainLines   || [];
+      e.driftLines       = err.driftLines       || [];
+      e.noWeightLines    = err.noWeightLines    || [];
+      e.excelTotal       = err.excelTotal;
+      // Which axis failed, straight from the server rather than inferred.
+      e.qtyOk            = err.qtyOk;
+      e.totalOk          = err.totalOk;
+      e.excelOk          = err.excelOk;
       throw e;
     }
     throw new Error(err.error || `HTTP ${res.status}`);
@@ -409,7 +425,10 @@ export default function App() {
             uncertainCount: (e.uncertainLines || []).length,
             driftItems: (e.driftLines || []).map(x => x.itemNo),
             driftCount: (e.driftLines || []).length,
+            noWeightItems: e.noWeightLines || [],
+            noWeightCount: (e.noWeightLines || []).length,
             excelTotal: e.excelTotal,
+            qtyOk: e.qtyOk, totalOk: e.totalOk, excelOk: e.excelOk,
             preview: [], error: null, isPartial: true, file,
           };
           try {
@@ -623,6 +642,21 @@ function trustOf(r) {
 // Applied on EVERY download route, not just the ZIP — the auto-download after
 // a mismatch used to land in the downloads folder under a clean name before
 // the warning had even rendered.
+// Which validation axis actually failed, most specific first — shared by the
+// single view and the batch row so the two can never name different reasons.
+function rowAxis(r) {
+  if (r.qtyOk   === false) return "qty";
+  if (r.excelOk === false) return "excel";
+  if (r.totalOk === false) return "total";
+  return "qty";
+}
+
+// The figure worth quoting: for an Excel-total failure that is the workbook's
+// own sum, not the parsed one.
+function rowTotal(r) {
+  return rowAxis(r) === "excel" && r.excelTotal != null ? r.excelTotal : r.total;
+}
+
 function exportNameFor(r, t) {
   const { ok, kind } = trustOf(r);
   if (ok || kind === "error") return r.xlsxName;
@@ -856,6 +890,12 @@ function PartialWarning({ result, onForceDownload, t }) {
   // Detailed rows to show when expanded: every missed row that carries a reason
   const detailRows = missed.filter(r => r.reason);
 
+  // The heading used to be a fixed "piece count does not match" regardless —
+  // on an invoice rejected because the workbook total drifted, whose piece
+  // count matched exactly.
+  const failedAxis = rowAxis(result);
+  const shownTotal = rowTotal(result);
+
   return (
     <div style={{
       background: "#1a1200", border: `1px solid #b86e00`, borderRadius: 10,
@@ -863,19 +903,24 @@ function PartialWarning({ result, onForceDownload, t }) {
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
         <AlertTriangle size={16} color="#f59e0b" />
-        <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#f59e0b" }}>{t.mismatchTitle}</span>
+        <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#f59e0b" }}>{t.mismatchTitle(failedAxis)}</span>
       </div>
       <p style={{ fontSize: "0.78rem", color: T.textDim, lineHeight: 1.5 }}>
-        {t.mismatchFound} <strong style={{ color: T.text }}>{result.qty} {t.rows} · {fmtCHF(result.total)}</strong><br />
+        {/* When the workbook is what disagrees, show the workbook's own total —
+            quoting the parsed figure named a 2-cent gap on a file that was
+            actually 12 cents out, and the reader went looking for the wrong thing. */}
+        {t.mismatchFound} <strong style={{ color: T.text }}>
+          {result.qty} {t.rows} · {fmtCHF(shownTotal)}
+        </strong>
+        {failedAxis === "excel" && <span style={{ color: T.textMute }}> {t.fromTheExcel}</span>}
+        <br />
         {t.mismatchExp} <strong style={{ color: T.text }}>{result.expectedQty} {t.rows} · {fmtCHF(result.expectedTotal)}</strong>
-        {/* Name the actual discrepancy — the amount can be off while the piece
-            count matches, and subtracting two small numbers is the reader's job otherwise. */}
         {(result.expectedQty != null || result.expectedTotal != null) && (
           <><br />
             <span style={{ color: "#f59e0b" }}>
               {result.expectedQty != null && t.shortBy(result.expectedQty - result.qty)}
-              {result.expectedTotal != null && Math.abs(result.expectedTotal - result.total) >= 0.01 &&
-                `${result.expectedQty != null ? " · " : ""}${t.amountOff(result.expectedTotal - result.total)}`}
+              {result.expectedTotal != null && Math.abs(result.expectedTotal - shownTotal) >= 0.01 &&
+                `${result.expectedQty != null ? " · " : ""}${t.amountOff(result.expectedTotal - shownTotal)}`}
             </span>
           </>
         )}
@@ -1259,13 +1304,16 @@ function BatchDoneState({ results, successCount, errorCount, partialCount, onDow
                 {r.error && <p style={{ fontSize: "0.7rem", color: T.bad,   marginTop: "0.2rem", marginLeft: 17 }}>{r.error}</p>}
                 {r.isPartial && (
                   <>
-                    <p style={{ fontSize: "0.7rem", color: "#f59e0b", marginTop: "0.2rem", marginLeft: 17 }}>
+                    {/* Same reason the single view shows, so a batch row and a
+                        single conversion of the same file never disagree. */}
+                    <p style={{ fontSize: "0.7rem", color: "#f59e0b", marginTop: "0.2rem", marginLeft: 17, fontWeight: 600 }}>
+                      {t.mismatchTitle(rowAxis(r))}
+                    </p>
+                    <p style={{ fontSize: "0.7rem", color: "#f59e0b", marginTop: "0.1rem", marginLeft: 17 }}>
                       {t.mismatchFound} {r.qty} / {r.expectedQty} {t.rows}
                       {r.expectedQty != null && ` (${t.shortBy(r.expectedQty - r.qty)})`}
-                      {/* The amount can be the real discrepancy while the piece
-                          count matches; batch mode used to show only the count. */}
-                      {r.expectedTotal != null && Math.abs(r.expectedTotal - r.total) >= 0.01 &&
-                        ` · ${t.amountOff(r.expectedTotal - r.total)}`}
+                      {r.expectedTotal != null && Math.abs(r.expectedTotal - rowTotal(r)) >= 0.01 &&
+                        ` · ${t.amountOff(r.expectedTotal - rowTotal(r))}`}
                     </p>
                     {r.forcedAt && (
                       <p style={{ fontSize: "0.66rem", color: T.textMute, marginTop: "0.1rem", marginLeft: 17 }}>

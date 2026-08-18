@@ -1063,6 +1063,12 @@ async function handleConvert(req, res) {
       excelTotal:       v.excelTotal,
       excelOk:          v.excelOk,
       driftLines:       v.driftLines,
+      noWeightLines:    v.noWeightLines,
+      // Which axis actually failed. Without these the client could only guess,
+      // and it guessed "quantity" — the heading said the piece count did not
+      // match on an invoice whose piece count matched exactly.
+      qtyOk:            v.qtyOk,
+      totalOk:          v.totalOk,
     });
   }
 
