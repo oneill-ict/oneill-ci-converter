@@ -99,16 +99,17 @@ function extractCountry(groupCountry) {
 }
 
 // Mirrors readGoodsTotal() in api/convert.js — keep both in sync.
-export const AMOUNT_RE = /^(?:0|[1-9]\d{0,2}(?:\.\d{3})*|[1-9]\d*),\d{2}$/;
+export const AMOUNT_RE = /^-?(?:0|[1-9]\d{0,2}(?:\.\d{3})*|[1-9]\d*),\d{2}$/;
 
 export function readGoodsTotal(flatText) {
   const CUR = /(?:CHF|EUR|GBP|USD|CAD)/.source;
 
   const tariffTableAt = flatText.toLowerCase().indexOf("subtotal tariff no.");
-  const zone = tariffTableAt >= 0 ? flatText.slice(0, tariffTableAt) : flatText;
+  let zone = tariffTableAt >= 0 ? flatText.slice(0, tariffTableAt) : flatText;
+  if (!/Goods total/i.test(zone)) zone = flatText;
 
   let last = null;
-  for (const m of zone.matchAll(new RegExp(`Goods total\\s*([\\d.,]+)(?:\\s+([\\d.,]+))?\\s*${CUR}`, "gi"))) last = m;
+  for (const m of zone.matchAll(new RegExp(`Goods total\\s*([-\\d.,]+)(?:\\s+(-?[\\d.,]+))?\\s*${CUR}`, "gi"))) last = m;
   if (!last) return { qty: null, total: null };
 
   if (last[2] !== undefined) {
@@ -116,9 +117,9 @@ export function readGoodsTotal(flatText) {
   }
 
   const tail = zone.slice(last.index);
-  const subM = new RegExp(`Subtotal\\s*([\\d.,]+)\\s*${CUR}`, "i").exec(tail);
+  const subM = new RegExp(`Subtotal\\s*(-?[\\d.,]+)\\s*${CUR}`, "i").exec(tail);
   if (!subM) return { qty: null, total: null };
-  const discM = new RegExp(`Discount\\s*([\\d.,]+)\\s*${CUR}`, "i").exec(tail.slice(0, subM.index));
+  const discM = new RegExp(`Discount\\s*(-?[\\d.,]+)\\s*${CUR}`, "i").exec(tail.slice(0, subM.index));
   const target = round2(parseEuropeanNumber(subM[1]) + (discM ? parseEuropeanNumber(discM[1]) : 0));
 
   const run = last[1];
