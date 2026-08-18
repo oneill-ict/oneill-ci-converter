@@ -67,7 +67,8 @@ function parseQtyPrice(combined, totalCHF, discountCHF = 0) {
 function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
   const s = combined.trim();
   const commaIdx = s.indexOf(",");
-  if (commaIdx < 0) return { qty: parseInt(s, 10), price: 0, discMult: 1 };
+  // Must report the worst diff: nothing was split, and the price is forced to 0.
+  if (commaIdx < 0) return { qty: parseInt(s, 10), price: 0, discMult: 1, diff: Infinity };
   const intPart = s.slice(0, commaIdx);
   const decPart = s.slice(commaIdx + 1).trim();
   const target  = round2(totalCHF + discountCHF);

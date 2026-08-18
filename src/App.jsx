@@ -19,6 +19,8 @@ const i18n = {
     downloadStart: "Download gestart",
     validOk:       "Validatie geslaagd",
     validUnchecked:"Niet gecontroleerd — factuurtotaal niet gevonden",
+    validQtyOnly:  "Alleen aantal gecontroleerd — bedrag niet leesbaar",
+    validTotalOnly:"Alleen bedrag gecontroleerd — aantal niet leesbaar",
     validRows:     (q, t) => `${q} stuks · CHF ${t}`,
     redownload:    "Opnieuw downloaden",
     newInvoice:    "Nieuwe factuur converteren",
@@ -95,6 +97,8 @@ const i18n = {
     downloadStart: "Download started",
     validOk:       "Validation passed",
     validUnchecked:"Not verified — invoice total not found",
+    validQtyOnly:  "Only the quantity was verified — amount unreadable",
+    validTotalOnly:"Only the amount was verified — quantity unreadable",
     validRows:     (q, t) => `${q} pieces · CHF ${t}`,
     redownload:    "Download again",
     newInvoice:    "Convert new invoice",
@@ -216,8 +220,10 @@ async function convertFile(file, force = false) {
 
   const qty              = parseInt(res.headers.get("X-Validation-Qty")    || "0", 10);
   const total            = parseFloat(res.headers.get("X-Validation-Total") || "0");
-  // "1" only when the totals were actually compared against the invoice footer.
+  // "1" only when BOTH axes were compared against the invoice footer.
   const checked          = res.headers.get("X-Validation-Checked") === "1";
+  const qtyChecked       = res.headers.get("X-Validation-Qty-Checked")   === "1";
+  const totalChecked     = res.headers.get("X-Validation-Total-Checked") === "1";
   // These headers are diagnostics. A malformed or truncated value must never
   // discard an otherwise good conversion, so parse failures degrade to empty.
   const parseHeader = (raw, decode) => {
@@ -234,7 +240,7 @@ async function convertFile(file, force = false) {
   // Invoice lines, as opposed to `qty` which is the total piece count.
   const lineCount        = parseInt(res.headers.get("X-Line-Count") || "0", 10);
   const blob             = await res.blob();
-  return { blob, qty, total, checked, lineCount, preview, unparsedItemNos, unparsedCount, uncertainItems, uncertainCount };
+  return { blob, qty, total, checked, qtyChecked, totalChecked, lineCount, preview, unparsedItemNos, unparsedCount, uncertainItems, uncertainCount };
 }
 
 // ── App ─────────────────────────────────────────────────────────────────────
@@ -293,10 +299,10 @@ export default function App() {
       const xlsxName = file.name.replace(/\.[^.]+$/, "") + ".xlsx";
 
       try {
-        const { blob, qty, total, checked, lineCount, preview, unparsedItemNos, uncertainItems, uncertainCount } = await convertFile(file);
+        const { blob, qty, total, checked, qtyChecked, totalChecked, lineCount, preview, unparsedItemNos, uncertainItems, uncertainCount } = await convertFile(file);
         // Single file: trigger immediate download
         if (pdfs.length === 1) triggerDownload(blob, xlsxName);
-        batch.push({ name: file.name, xlsxName, blob, qty, total, checked, lineCount, preview,
+        batch.push({ name: file.name, xlsxName, blob, qty, total, checked, qtyChecked, totalChecked, lineCount, preview,
           unparsedItemNos: unparsedItemNos || [], uncertainItems: uncertainItems || [], uncertainCount: uncertainCount || 0,
           error: null, isPartial: false, file });
       } catch (e) {
@@ -651,12 +657,15 @@ function PreviewTable({ rows, totalItems, t }) {
   );
 }
 
-function ValidationBadge({ qty, total, checked, t }) {
+function ValidationBadge({ qty, total, checked, qtyChecked, totalChecked, t }) {
   if (!qty) return null;
-  // Three states, not two. `checked === false` means the invoice footer total
-  // could not be read, so nothing was compared — claiming "passed" there would
-  // be a guarantee the converter cannot give.
+  // `checked` is now true only when BOTH axes ran. When exactly one ran, say
+  // which — "passed" would claim a guarantee that covers only half the risk.
   const isChecked = checked !== false;
+  const partial   = !isChecked && (qtyChecked || totalChecked);
+  const label     = isChecked ? t.validOk
+                  : partial   ? (qtyChecked ? t.validQtyOnly : t.validTotalOnly)
+                  : t.validUnchecked;
   const accent    = isChecked ? T.good     : "#f59e0b";
   const bg        = isChecked ? T.goodSoft : "#1a1200";
   return (
@@ -670,9 +679,7 @@ function ValidationBadge({ qty, total, checked, t }) {
       <span style={{ fontSize: "0.82rem", color: T.text, fontWeight: 600 }}>
         {t.validRows(qty, fmtCHF(total))}
       </span>
-      <span style={{ fontSize: "0.72rem", color: accent }}>
-        {isChecked ? t.validOk : t.validUnchecked}
-      </span>
+      <span style={{ fontSize: "0.72rem", color: accent }}>{label}</span>
     </div>
   );
 }
@@ -859,7 +866,8 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
         {isOk && (
           <>
             <p style={{ fontWeight: 600, color: T.text, marginBottom: "0.75rem" }}>{t.downloadStart}</p>
-            <ValidationBadge qty={result.qty} total={result.total} checked={result.checked} t={t} />
+            <ValidationBadge qty={result.qty} total={result.total} checked={result.checked}
+              qtyChecked={result.qtyChecked} totalChecked={result.totalChecked} t={t} />
             <p style={{ fontSize: "0.73rem", color: T.textMute, fontFamily: "JetBrains Mono, monospace", marginBottom: "0.75rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {result.xlsxName}
             </p>
