@@ -150,7 +150,10 @@ function parseInvoiceText(text) {
   let itemsEnd     = flatLower.indexOf("subtotal tariff no.");
   if (itemsEnd < 0) itemsEnd = flatLower.lastIndexOf("goods total");
   const lastGoodsTotal = flatLower.lastIndexOf("goods total", itemsEnd < 0 ? undefined : itemsEnd);
-  if (lastGoodsTotal > itemsStart) itemsEnd = lastGoodsTotal;
+  if (lastGoodsTotal > itemsStart) {
+    const cut = flatText.slice(lastGoodsTotal, itemsEnd < 0 ? undefined : itemsEnd);
+    if (!/\d{10}/.test(cut)) itemsEnd = lastGoodsTotal;
+  }
   const itemsText  = itemsStart >= 0 && itemsEnd > itemsStart
     ? flatText.slice(itemsStart, itemsEnd)
     : itemsStart >= 0 ? flatText.slice(itemsStart) : flatText;
@@ -195,7 +198,9 @@ function parseInvoiceText(text) {
       tariffEnd   = tariffGrM.index + tariffGrM[0].length;
       grossWeight = parseEuropeanNumber(tariffGrM[2]);
     } else {
-      const bareM = /(\d{10})(?=\d)/.exec(block.slice(itemNoEnd));
+      const rest   = block.slice(itemNoEnd);
+      const curIdx = rest.search(/(?:CHF|EUR|GBP|USD|CAD)/);
+      const bareM  = /(\d{10})(?=\d)/.exec(curIdx > 0 ? rest.slice(0, curIdx) : rest);
       if (bareM) {
         tariffNo  = bareM[1];
         tariffPos = itemNoEnd + bareM.index;
