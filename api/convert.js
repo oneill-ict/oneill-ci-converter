@@ -207,10 +207,6 @@ function parseInvoiceText(text) {
   if (boxesM)    invoice.numberOfBoxes = boxesM[1].trim();
   if (weightM)   invoice.grossWeight   = weightM[1].trim();
 
-  // Detect invoice currency (CHF for Switzerland, EUR for other countries)
-  const currencyM = /\b(CHF|EUR|GBP)\b/.exec(text);
-  invoice.currency = currencyM ? currencyM[1] : "CHF";
-
   // Stop at "O'Neill Europe B.V." — the shipper block always follows the billing
   // address, regardless of destination country (CH, MT, etc.).
   // Previously used "Switzerland" which broke non-CH invoices (e.g. Malta/EUR),
@@ -249,7 +245,11 @@ function parseInvoiceText(text) {
   // Strip inter-page boilerplate (e.g. German origin disclaimer on CH invoices).
   // This text appears between items on multi-page invoices and prevents the split
   // regex from finding the correct boundary before the next item number.
-  flatText = flatText.replace(/Bei Waren[\s\S]*?(?=\d{4}[A-Z]|\d{7,8}|N\d{5,7})/g, '');
+  // The lookahead must list every item-number format the splitter knows about.
+  // It lagged behind twice already: a wetsuit written "5551 Hyperfreak" or an
+  // ONS code sitting right after this boilerplate would not stop the deletion,
+  // so the item itself would be swallowed along with the disclaimer.
+  flatText = flatText.replace(/Bei Waren[\s\S]*?(?=\d{4}[A-Z]|\d{4} [A-Z]|ONS[A-Z]|\d{7,8}|N\d{5,7})/g, '');
   // Collapse multiple spaces after currency symbols so the split lookbehind (fixed-length)
   // can match "CHF " regardless of how many spaces the PDF layout left behind.
   flatText = flatText.replace(/(CHF|EUR|GBP) {2,}/g, '$1 ');
@@ -275,6 +275,13 @@ function parseInvoiceText(text) {
   const itemsText  = itemsStart >= 0 && itemsEnd > itemsStart
     ? flatText.slice(itemsStart, itemsEnd)
     : itemsStart >= 0 ? flatText.slice(itemsStart) : flatText;
+
+  // Detect invoice currency (CHF for Switzerland, EUR for other countries).
+  // Read from the items section, where the currency sits next to the amounts,
+  // rather than the first mention anywhere in the document — a header or a
+  // terms paragraph naming another currency would have set the whole export to it.
+  const currencyM = /\b(CHF|EUR|GBP)\b/.exec(itemsText) || /\b(CHF|EUR|GBP)\b/.exec(text);
+  invoice.currency = currencyM ? currencyM[1] : "CHF";
 
   // Expected totals — read from the LAST "Goods total" line (the grand total).
   // Scan the full flatText so intermediate per-page subtotals don't shadow it.
@@ -791,7 +798,12 @@ async function buildExcel(invoice) {
     const fill = i % 2 === 1 ? greyFill : null;
     setCell(r, 1, tariff, { font: boldFont, ...(fill ? { fill } : {}) });
     const sc     = ws.getCell(r, 2);
-    sc.value     = { formula: `SUMIF(${tariffCol},A${r},${totalCol})`, result: tariffTotals[tariff] || 0 };
+    // SUMPRODUCT rather than SUMIF: both the range and the criteria cell hold
+    // the tariff number as text, and SUMIF coerces a numeric-looking criteria to
+    // a number — the classic number-vs-text-in-range silent zero. The workbook
+    // opens correctly either way because the result is cached, so this only
+    // showed up once a user edited a cell and Excel recalculated.
+    sc.value     = { formula: `SUMPRODUCT(--(${tariffCol}=A${r}),${totalCol})`, result: tariffTotals[tariff] || 0 };
     sc.numFmt    = "#,##0.00";
     sc.font      = boldFont;
     if (fill) sc.fill = fill;
@@ -1008,6 +1020,9 @@ async function handleConvert(req, res) {
   // Whether the totals were actually compared against the invoice footer.
   // Without this the UI cannot tell a verified result from an unverified one.
   res.setHeader("X-Validation-Checked",        v?.checked ? "1" : "0");
+  // Number of invoice LINES, as distinct from the piece count above. The UI used
+  // the piece count to label rows, producing "+213 more rows" on a 40-line invoice.
+  res.setHeader("X-Line-Count",                String(invoice.items.length));
   res.setHeader("X-Validation-Expected-Qty",   String(v?.expectedQty   ?? ""));
   res.setHeader("X-Validation-Expected-Total", String(v?.expectedTotal ?? ""));
   // Expose unparsed item numbers even on success so the frontend can show a soft
