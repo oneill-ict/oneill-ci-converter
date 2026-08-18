@@ -82,6 +82,8 @@ const i18n = {
     uncertainQtyNote: (n) => n === 1
       ? "Let op: bij 1 regel kon het aantal niet uit de factuur worden afgeleid — het getal in de export is een schatting. Controleer:"
       : `Let op: bij ${n} regels kon het aantal niet uit de factuur worden afgeleid — die getallen zijn een schatting. Controleer:`,
+    driftNote: (n, excel, stated) =>
+      `Let op: het Excel telt op tot CHF ${excel}, de factuur zegt CHF ${stated}. Dat komt door ${n} regel${n === 1 ? "" : "s"} waar aantal × prijs niet exact het regeltotaal oplevert:`,
   },
   EN: {
     title:         "Commercial Invoice Converter",
@@ -160,6 +162,8 @@ const i18n = {
     uncertainQtyNote: (n) => n === 1
       ? "Note: on 1 line the quantity could not be derived from the invoice — the number in the export is an estimate. Please check:"
       : `Note: on ${n} lines the quantity could not be derived from the invoice — those numbers are estimates. Please check:`,
+    driftNote: (n, excel, stated) =>
+      `Note: the Excel adds up to CHF ${excel}, the invoice says CHF ${stated}. This comes from ${n} line${n === 1 ? "" : "s"} where quantity × price does not reproduce the stated line total exactly:`,
   },
 };
 
@@ -237,10 +241,16 @@ async function convertFile(file, force = false) {
   const unparsedCount    = parseInt(res.headers.get("X-Unparsed-Count") || "0", 10) || unparsedItemNos.length;
   const uncertainItems   = parseHeader(res.headers.get("X-Uncertain-Items"), false);
   const uncertainCount   = parseInt(res.headers.get("X-Uncertain-Count") || "0", 10) || uncertainItems.length;
+  // The workbook's own total, which can differ from the line totals stated on
+  // the invoice when a qty/price split does not reconcile exactly.
+  const excelTotal       = parseFloat(res.headers.get("X-Excel-Total") || "0");
+  const driftItems       = parseHeader(res.headers.get("X-Drift-Items"), false);
+  const driftCount       = parseInt(res.headers.get("X-Drift-Count") || "0", 10) || driftItems.length;
   // Invoice lines, as opposed to `qty` which is the total piece count.
   const lineCount        = parseInt(res.headers.get("X-Line-Count") || "0", 10);
   const blob             = await res.blob();
-  return { blob, qty, total, checked, qtyChecked, totalChecked, lineCount, preview, unparsedItemNos, unparsedCount, uncertainItems, uncertainCount };
+  return { blob, qty, total, checked, qtyChecked, totalChecked, lineCount, preview,
+    unparsedItemNos, unparsedCount, uncertainItems, uncertainCount, excelTotal, driftItems, driftCount };
 }
 
 // ── App ─────────────────────────────────────────────────────────────────────
@@ -299,11 +309,12 @@ export default function App() {
       const xlsxName = file.name.replace(/\.[^.]+$/, "") + ".xlsx";
 
       try {
-        const { blob, qty, total, checked, qtyChecked, totalChecked, lineCount, preview, unparsedItemNos, uncertainItems, uncertainCount } = await convertFile(file);
+        const c = await convertFile(file);
         // Single file: trigger immediate download
-        if (pdfs.length === 1) triggerDownload(blob, xlsxName);
-        batch.push({ name: file.name, xlsxName, blob, qty, total, checked, qtyChecked, totalChecked, lineCount, preview,
-          unparsedItemNos: unparsedItemNos || [], uncertainItems: uncertainItems || [], uncertainCount: uncertainCount || 0,
+        if (pdfs.length === 1) triggerDownload(c.blob, xlsxName);
+        batch.push({ name: file.name, xlsxName, ...c,
+          unparsedItemNos: c.unparsedItemNos || [], uncertainItems: c.uncertainItems || [],
+          uncertainCount: c.uncertainCount || 0, driftItems: c.driftItems || [], driftCount: c.driftCount || 0,
           error: null, isPartial: false, file });
       } catch (e) {
         if (e.isPartial) {
@@ -820,6 +831,31 @@ function UncertainQtyWarning({ items, count, t }) {
   );
 }
 
+// The workbook recomputes each line as qty × price − discount, which can differ
+// from the total the invoice states for that line. Without this the delivered
+// file could disagree with the invoice and nothing would say so.
+function ExcelDriftWarning({ result, t }) {
+  if (!result.driftCount) return null;
+  const items = result.driftItems || [];
+  return (
+    <div style={{
+      background: T.panelDeep, border: `1px solid #5a4400`, borderRadius: 8,
+      padding: "0.6rem 0.85rem", marginBottom: "0.75rem",
+      display: "flex", alignItems: "flex-start", gap: "0.5rem",
+    }}>
+      <AlertTriangle size={13} color="#c78c00" style={{ marginTop: 2, flexShrink: 0 }} />
+      <p style={{ fontSize: "0.72rem", color: T.textDim, lineHeight: 1.5, margin: 0 }}>
+        {t.driftNote(result.driftCount, fmtCHF(result.excelTotal), fmtCHF(result.total))}{" "}
+        {items.length > 0 && (
+          <span style={{ fontFamily: "JetBrains Mono, monospace", color: T.textMute }}>
+            {items.slice(0, 12).join(", ")}{items.length > 12 ? ` +${items.length - 12}` : ""}
+          </span>
+        )}
+      </p>
+    </div>
+  );
+}
+
 function SilentGapWarning({ unparsedItemNos, t }) {
   if (!unparsedItemNos || unparsedItemNos.length === 0) return null;
   return (
@@ -881,6 +917,7 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
             </button>
             <SilentGapWarning unparsedItemNos={result.unparsedItemNos} t={t} />
             <UncertainQtyWarning items={result.uncertainItems} count={result.uncertainCount} t={t} />
+            <ExcelDriftWarning result={result} t={t} />
           </>
         )}
 
