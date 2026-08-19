@@ -1049,6 +1049,24 @@ async function handleConvert(req, res) {
   const { pdf, filename, force } = req.body || {};
   if (!pdf) return res.status(400).json({ error: "Geen PDF ontvangen" });
 
+  // Buffer.from accepts anything array-like and then IGNORES the "base64"
+  // argument, so `{"pdf":{"length":200000000}}` — a 28-byte request — allocated
+  // 191 MB and spent 9 seconds zero-filling it. Scale the number up and it is
+  // either the whole CPU budget or an out-of-memory kill, from a body small
+  // enough that no request-size limit can see it.
+  if (typeof pdf !== "string") {
+    return res.status(400).json({ error: "Ongeldige PDF-data" });
+  }
+  // Base64 inflates by ~4/3, so this bounds the decoded PDF to ~5 MB — above the
+  // platform's own request cap, so it can never be the binding limit for a
+  // legitimate file, but it stops an oversized string reaching the decoder.
+  const MAX_BASE64_CHARS = 7_000_000;
+  if (pdf.length > MAX_BASE64_CHARS) {
+    return res.status(413).json({
+      error: "Deze PDF is te groot om te verwerken. Splits de factuur of maak hem handmatig op.",
+    });
+  }
+
   let pdfBuffer;
   try {
     pdfBuffer = Buffer.from(pdf, "base64");
