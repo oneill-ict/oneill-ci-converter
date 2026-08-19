@@ -3,6 +3,7 @@ import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import { extractLines, readItemRows } from "../lib/invoice-rows.mjs";
 import { readGoodsTotal, parseEuropeanNumber, round2 } from "../lib/invoice-footer.mjs";
+import { findCity } from "../lib/invoice-address.mjs";
 
 // There used to be `export const config = { api: { bodyParser: { sizeLimit:
 // "10mb" } } }` here. That is Next.js API-route syntax and this is a Vite SPA on
@@ -18,12 +19,13 @@ import { readGoodsTotal, parseEuropeanNumber, round2 } from "../lib/invoice-foot
 // ── PDF parser ─────────────────────────────────────────────────────────────
 
 
-// parseInt/parseFloat return NaN on anything unparseable, and every fall-through
-// in the split functions ended in one. A NaN quantity reached ExcelJS, which
-// writes it verbatim as <v>NaN</v> in a numeric cell — not valid SpreadsheetML,
-// so Excel opens with the "we found a problem with some content" repair dialog.
-// The result was a 200 OK with an unopenable attachment. The goods-total reader
-// already had this guard; the per-line readers never got it.
+// parseInt/parseFloat return NaN on anything unparseable. A NaN quantity reached
+// ExcelJS, which writes it verbatim as <v>NaN</v> in a numeric cell — not valid
+// SpreadsheetML, so
+// Excel opens with the "we found a problem with some content" repair dialog, and
+// the response was a 200 OK with an unopenable attachment. The quantity-splitting
+// fall-throughs that produced those NaNs are gone, but the cells still pass through
+// here: a guard at the point of writing outlives whatever fed it.
 const finiteOr0 = (n) => (Number.isFinite(n) ? n : 0);
 
 // Filenames come off the user's disk and in practice carry customer names
@@ -50,16 +52,6 @@ const CSV_UNSAFE_START = /^[=+\-@\t\r]/;
 const csvSafe = (v) =>
   (typeof v === "string" && CSV_UNSAFE_START.test(v)) ? "'" + v : v;
 
-// Reads the invoice grand total from the "Goods total" footer line.
-// Two layouts exist across templates:
-//   spaced:       "Goods total 226 8.429,10 CHF"  → 226 pieces, 8.429,10
-//   glued:        "Goods total2913.304,16 EUR"    → 291 pieces, 3.304,16
-// Only the spaced form used to be recognised, so on glued invoices both values
-// came back null and validation was silently skipped (it treats null as "ok").
-// The glued run is ambiguous on its own, so the amount is pinned via
-// Subtotal + Discount — neither of which carries a quantity prefix — and the
-// quantity is whatever digits remain in front of it.
-// Returns { qty, total }; either field is null when it cannot be established.
 function parseInvoiceText(text, lines) {
   const invoice = {
     date: "", orderNumber: "", deliveryTerms: "", numberOfBoxes: "",
@@ -91,13 +83,12 @@ function parseInvoiceText(text, lines) {
     invoice.billingAddress = addrLines.slice(1);
   }
 
-  // ── Auto-city: append destination city to DDP delivery terms ──────────────
-  // Looks for a postal-code line in the ship-to address (e.g. "CH-4303 Kaiseraugst")
-  const _cityM = (invoice.billingAddress || [])
-    .map(l => /(?:[A-Z]{2}-\d{3,5}|\d{3,5}(?:\s+[A-Z]{2})?)\s+([A-Za-züöäÜÖÄ][A-Za-züöäÜÖÄ\-]+)/.exec(l))
-    .find(Boolean);
-  if (_cityM && invoice.deliveryTerms === "DDP") {
-    invoice.deliveryTerms = `DDP ${_cityM[1].trim()}`;
+  // ── Auto-city: append the destination city to DDP delivery terms ──────────
+  // See lib/invoice-address.mjs for why this is not one regex. The rule that
+  // matters here: when no city can be established the term stays a plain "DDP".
+  const city = findCity(invoice.billingAddress);
+  if (city && invoice.deliveryTerms === "DDP") {
+    invoice.deliveryTerms = `DDP ${city}`;
   }
 
   // ── B2B detection: Spedag / Kaiseraugst ship-to = B2B invoice ─────────────
