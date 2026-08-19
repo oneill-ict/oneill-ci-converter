@@ -45,6 +45,12 @@ const i18n = {
     missedReasonDefault: (r) => r,
     downloadAnyway:"Download toch",
     failTitle:     "Verwerking mislukt",
+    errTooLarge:   "Deze PDF is te groot om te verwerken. Splits de factuur of maak hem handmatig op.",
+    errTimeout:    "De verwerking duurde te lang en is afgebroken. Probeer het nog eens; blijft het misgaan, meld deze factuur dan.",
+    errBusy:       "Te veel verzoeken achter elkaar. Wacht even en probeer het opnieuw.",
+    errServer:     "Er ging iets mis op de server. Probeer het nog eens; blijft het misgaan, meld deze factuur dan.",
+    errNetwork:    "Geen verbinding met de server. Controleer je internetverbinding.",
+    errHttp:       (s) => `Onverwachte fout van de server (${s}). Meld deze factuur.`,
     filesOf:       (s, n) => `${s} van ${n} bestanden verwerkt`,
     failedCount:   (n) => `${n} mislukt`,
     warnCount:     (n) => `${n} met waarschuwing`,
@@ -154,6 +160,12 @@ const i18n = {
     missedReasonDefault: (r) => r,
     downloadAnyway:"Download anyway",
     failTitle:     "Processing failed",
+    errTooLarge:   "This PDF is too large to process. Split the invoice or prepare it by hand.",
+    errTimeout:    "Processing took too long and was stopped. Try again; if it keeps failing, report this invoice.",
+    errBusy:       "Too many requests in a row. Wait a moment and try again.",
+    errServer:     "Something went wrong on the server. Try again; if it keeps failing, report this invoice.",
+    errNetwork:    "No connection to the server. Check your internet connection.",
+    errHttp:       (s) => `Unexpected error from the server (${s}). Report this invoice.`,
     filesOf:       (s, n) => `${s} of ${n} files processed`,
     failedCount:   (n) => `${n} failed`,
     warnCount:     (n) => `${n} with warning`,
@@ -247,21 +259,52 @@ const fmtCHF = (n) =>
 
 // ── API call ────────────────────────────────────────────────────────────────
 
-async function convertFile(file, force = false) {
+// The server gives up at 30 s; allow a little more so its own error reaches us
+// before ours does, then stop waiting. Without an abort a stalled request held
+// the whole sequential batch open indefinitely with no way to cancel it.
+const REQUEST_TIMEOUT_MS = 40_000;
+
+// A platform-level failure (413, 504, a proxy page) has no JSON body, so the old
+// fallback surfaced the bare string "HTTP 504" to a logistics colleague. Each of
+// these says what happened and what to do about it.
+function httpErrorMessage(status, t) {
+  if (status === 413) return t.errTooLarge;
+  if (status === 504 || status === 502) return t.errTimeout;
+  if (status === 429) return t.errBusy;
+  if (status >= 500)  return t.errServer;
+  return t.errHttp(status);
+}
+
+async function convertFile(file, force = false, t) {
   const arrayBuffer = await file.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
+  // Chunked rather than one byte at a time — same result, an order of magnitude
+  // less main-thread time, so the progress indicator can still paint.
   let binary = "";
-  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
   const base64 = btoa(binary);
 
-  const res = await fetch("/api/convert", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pdf: base64, filename: file.name, force }),
-  });
+  const ctl   = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), REQUEST_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch("/api/convert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pdf: base64, filename: file.name, force }),
+      signal: ctl.signal,
+    });
+  } catch (e) {
+    throw new Error(e?.name === "AbortError" ? t.errTimeout : t.errNetwork);
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    const err = await res.json().catch(() => ({ error: httpErrorMessage(res.status, t) }));
     // Validation mismatch: expose structured data for the friendly warning UI
     if (res.status === 422 && err.parsedQty != null) {
       const e = new Error("validation_mismatch");
@@ -281,7 +324,7 @@ async function convertFile(file, force = false) {
       e.totalOk          = err.totalOk;
       throw e;
     }
-    throw new Error(err.error || `HTTP ${res.status}`);
+    throw new Error(err.error || httpErrorMessage(res.status, t));
   }
 
   const qty              = parseInt(res.headers.get("X-Validation-Qty")    || "0", 10);
@@ -398,7 +441,7 @@ export default function App() {
       const xlsxName = file.name.replace(/\.[^.]+$/, "") + ".xlsx";
 
       try {
-        const c = await convertFile(file);
+        const c = await convertFile(file, false, t);
         const row = { name: file.name, xlsxName, ...c,
           unparsedItemNos: c.unparsedItemNos || [], uncertainItems: c.uncertainItems || [],
           uncertainCount: c.uncertainCount || 0,
@@ -426,7 +469,7 @@ export default function App() {
             preview: [], error: null, isPartial: true, file,
           };
           try {
-            const forced = await convertFile(file, true);
+            const forced = await convertFile(file, true, t);
             autoBlob    = forced.blob;
             autoPreview = forced.preview;
             row.blob = autoBlob; row.preview = autoPreview;
@@ -437,7 +480,11 @@ export default function App() {
             // Auto-download carries the status in its name — this file lands in
             // the downloads folder before the warning has even rendered.
             if (pdfs.length === 1) triggerDownload(autoBlob, exportNameFor(row, t));
-          } catch {}
+          } catch (forceErr) {
+            // This used to be `catch {}`. A timeout or a 504 on the second pass
+            // left the row with no file and no explanation at all.
+            row.forceError = forceErr.message;
+          }
           batch.push(row);
         } else {
           batch.push({ name: file.name, xlsxName, blob: null, qty: null, total: null, preview: [], error: e.message, isPartial: false, file });
@@ -471,7 +518,7 @@ export default function App() {
     if (r.blob) { triggerDownload(r.blob, exportNameFor(r, t)); return; }
     setResults(prev => prev.map(p => p === r ? { ...p, forceLoading: true } : p));
     try {
-      const { blob, qty, total, preview } = await convertFile(r.file, true);
+      const { blob, qty, total, preview } = await convertFile(r.file, true, t);
       // A forced export is unverified by definition — the totals did not
       // reconcile. Stay `isPartial` so the mismatch figures and the missing-item
       // list remain on screen; only the download state changes.
