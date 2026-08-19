@@ -11,7 +11,14 @@ import path from "node:path";
 import ExcelJS from "exceljs";
 import handler from "./api/convert.js";
 
-const BASE = "C:/Users/sjoerd.lier/Downloads/ci-training-files";
+// The corpus is not in the repository: these are real customer invoices with names
+// and addresses on them. Point CI_CORPUS_DIR at the folder to run this locally; in
+// CI the test skips rather than failing, so one command covers both.
+const BASE = process.env.CI_CORPUS_DIR || "C:/Users/sjoerd.lier/Downloads/ci-training-files";
+if (!fs.existsSync(BASE)) {
+  console.log("facturencorpus niet aanwezig - overgeslagen");
+  process.exit(0);
+}
 const find = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap(e => {
   const p = path.join(d, e.name);
   return e.isDirectory() ? find(p) : e.name.toLowerCase().endsWith(".pdf") ? [p] : [];

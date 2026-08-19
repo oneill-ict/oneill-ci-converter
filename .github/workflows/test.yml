@@ -1,0 +1,45 @@
+# Runs the test suite and the production build on every push and pull request.
+#
+# `npm test` is deliberately the same command here as on a laptop. The tests that
+# need the invoice corpus skip themselves when it is absent, so there is no CI-only
+# variant to drift out of step — this repository has already been bitten twice by a
+# second copy of something going stale while the first kept passing.
+#
+# The corpus stays off CI on purpose: those are real customer invoices carrying names
+# and addresses. What runs here is the parsing logic, the request guards and the
+# workbook-cell guards, all of which are pure.
+
+name: test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the Node version Vercel runs the function on.
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Every source file has to at least parse. Cheap, and it catches a syntax
+      # error in a file no test happens to import.
+      - name: syntax check
+        run: |
+          for f in api/*.js lib/*.mjs run-tests.mjs; do
+            node --check "$f"
+          done
+
+      - run: npm test
+
+      # The frontend has to build: a broken import in App.jsx is invisible to the
+      # tests above but breaks the deployment.
+      - run: npm run build
