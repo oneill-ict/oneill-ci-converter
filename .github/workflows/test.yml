@@ -34,7 +34,7 @@ jobs:
       # error in a file no test happens to import.
       - name: syntax check
         run: |
-          for f in api/*.js lib/*.mjs run-tests.mjs; do
+          for f in api/*.js lib/*.mjs src/lib/*.js run-tests.mjs; do
             node --check "$f"
           done
 
