@@ -24,6 +24,9 @@ function findDbItemAt(text, pos, minLen = 4) {
 }
 
 const round2 = (n) => Math.round(n * 100) / 100;
+// Mirrors qtyTolerance() in api/convert.js — the printed unit price is rounded
+// to two decimals, so the gap scales at half a cent per piece.
+const qtyTolerance = (qty) => Math.abs(qty) * 0.005 + 0.001;
 
 function parseEuropeanNumber(s) {
   if (!s) return 0;
@@ -50,7 +53,7 @@ function parseQtyPrice(combined, totalCHF, discountCHF = 0) {
     const qty   = parseInt(intPart.slice(0, qLen), 10);
     const price = parseFloat(`${priceInt}.${decPart}`);
     if (isNaN(qty) || isNaN(price)) continue;
-    if (Math.abs(round2(qty * price) - expectedProd) < 0.02) return { qty, price, discMult: 1 };
+    if (Math.abs(round2(qty * price) - expectedProd) <= qtyTolerance(qty)) return { qty, price, discMult: 1 };
   }
   // Pass 2: per-unit discount format
   for (let qLen = 1; qLen < intPart.length; qLen++) {
@@ -88,7 +91,7 @@ function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
   return { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`), discMult: 1, diff: Infinity };
 }
 
-const QTY_SPLIT_TOLERANCE = 0.02;
+const isUncertainSplit = (guess) => guess.diff > qtyTolerance(guess.qty);
 
 function extractCountry(groupCountry) {
   const trimmed = groupCountry.trim();
@@ -253,10 +256,10 @@ function parseInvoiceText(text) {
 
     let { qty, price, discMult } = parseQtyPrice(combined, lineTotal, lineDiscount);
     let qtyUncertain = false;
-    if (Math.abs(round2(qty * price - lineDiscount * discMult) - lineTotal) > 0.01) {
+    if (Math.abs(round2(qty * price - lineDiscount * discMult) - lineTotal) > qtyTolerance(qty)) {
       const guess = bestQtyPrice(combined, lineTotal, lineDiscount);
       ({ qty, price, discMult } = guess);
-      qtyUncertain = guess.diff > QTY_SPLIT_TOLERANCE;
+      qtyUncertain = isUncertainSplit(guess);
     }
     const storedDiscount = round2(lineDiscount * discMult);
 
@@ -274,7 +277,7 @@ function parseInvoiceText(text) {
   if (!totalOk || !qtyOk) {
     for (const item of items) {
       const computed = round2(item.quantity * item.pricePerPiece - item.discount);
-      if (Math.abs(computed - item.total) > 0.01) {
+      if (Math.abs(computed - item.total) > qtyTolerance(item.quantity)) {
         const fixed = bestQtyPrice(item._combined, item.total, item._origDiscount ?? item.discount);
         repairs.push(item.itemNo);
         item.quantity      = fixed.qty;

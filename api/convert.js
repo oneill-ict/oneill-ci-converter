@@ -43,6 +43,15 @@ function splitItemColour(combined) {
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
+// How far qty × price may legitimately sit from the stated line total.
+// The invoice prints the unit price to two decimals, but bills at more: a line
+// of 4 at a true 79,005 shows "79,01" and totals 316,02, while 4 × 79,01 gives
+// 316,04. The gap is the display rounding, at most half a cent per piece, so it
+// scales with quantity — a flat figure flagged correct lines from 4 pieces up
+// and would have let a real error hide from 5 pieces up. The epsilon absorbs
+// binary floating-point noise exactly at the boundary.
+const qtyTolerance = (qty) => Math.abs(qty) * 0.005 + 0.001;
+
 function parseQtyPrice(combined, totalCHF, discountCHF = 0) {
   // combined = qty+price, possibly with spaces ("3 30,39") or thousands-sep periods ("11.200,00")
   // Two discount formats exist across invoice types:
@@ -63,7 +72,9 @@ function parseQtyPrice(combined, totalCHF, discountCHF = 0) {
     const qty   = parseInt(intPart.slice(0, qLen), 10);
     const price = parseFloat(`${priceInt}.${decPart}`);
     if (isNaN(qty) || isNaN(price)) continue;
-    if (Math.abs(round2(qty * price) - expectedProd) < 0.02) return { qty, price, discMult: 1 };
+    // Tolerance scales with this candidate's quantity: a flat 0.02 rejected the
+    // correct split on larger lines and could then accept a wrong one instead.
+    if (Math.abs(round2(qty * price) - expectedProd) <= qtyTolerance(qty)) return { qty, price, discMult: 1 };
   }
 
   // Pass 2 — per-unit discount format (e.g. Bens Surf Clinic / distributor invoices)
@@ -86,7 +97,7 @@ function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
   // No comma means there is nothing to split: the whole run is taken as the
   // quantity and the price is forced to 0. That is the most degenerate result
   // this function can produce, so it must report the worst possible diff —
-  // omitting it made `undefined > QTY_SPLIT_TOLERANCE` false and marked this
+  // omitting it made the uncertainty comparison false and marked this
   // exact case as certain.
   if (commaIdx < 0) return { qty: parseInt(s, 10), price: 0, discMult: 1, diff: Infinity };
   const intPart  = s.slice(0, commaIdx);
@@ -115,9 +126,9 @@ function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
   return { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`), discMult: 1, diff: Infinity };
 }
 
-// A correct split reconciles to the cent; anything above this is not a split
-// the invoice supports, only the least-bad option tried.
-const QTY_SPLIT_TOLERANCE = 0.02;
+// A split is uncertain when it sits further from the line total than the price
+// display rounding can account for — see qtyTolerance.
+const isUncertainSplit = (guess) => guess.diff > qtyTolerance(guess.qty);
 
 function extractCountry(groupCountry) {
   const trimmed = groupCountry.trim();
@@ -495,12 +506,14 @@ function parseInvoiceText(text) {
     // discMult=qty → per-unit discount format (discount × qty = total line discount).
     let { qty, price, discMult } = parseQtyPrice(combined, lineTotal, lineDiscount);
     let qtyUncertain = false;
-    if (Math.abs(round2(qty * price - lineDiscount * discMult) - lineTotal) > 0.01) {
+    // The reconcile check has to allow the same display rounding the split does,
+    // or a perfectly good line is sent to the fallback and flagged there.
+    if (Math.abs(round2(qty * price - lineDiscount * discMult) - lineTotal) > qtyTolerance(qty)) {
       const guess = bestQtyPrice(combined, lineTotal, lineDiscount);
       ({ qty, price, discMult } = guess);
       // No split of this run reconciles with the line total, so the quantity
       // below is the closest attempt rather than a value the invoice supports.
-      qtyUncertain = guess.diff > QTY_SPLIT_TOLERANCE;
+      qtyUncertain = isUncertainSplit(guess);
     }
     const storedDiscount = round2(lineDiscount * discMult);
 
@@ -523,19 +536,19 @@ function parseInvoiceText(text) {
   if (!totalOk || !qtyOk) {
     for (const item of invoice.items) {
       const computed = round2(item.quantity * item.pricePerPiece - item.discount);
-      if (Math.abs(computed - item.total) > 0.01) {
+      if (Math.abs(computed - item.total) > qtyTolerance(item.quantity)) {
         const fixed = bestQtyPrice(item._combined, item.total, item._origDiscount ?? item.discount);
         repairs.push({
           itemNo: item.itemNo, item: item.item, colour: item.colour,
           combined: item._combined,
           oldQty: item.quantity, oldPrice: item.pricePerPiece,
           newQty: fixed.qty,    newPrice: fixed.price,
-          uncertain: fixed.diff > QTY_SPLIT_TOLERANCE,
+          uncertain: isUncertainSplit(fixed),
         });
         item.quantity      = fixed.qty;
         item.pricePerPiece = fixed.price;
         item.discount      = round2((item._origDiscount ?? item.discount) * fixed.discMult);
-        item._qtyUncertain = fixed.diff > QTY_SPLIT_TOLERANCE;
+        item._qtyUncertain = isUncertainSplit(fixed);
       }
     }
 
