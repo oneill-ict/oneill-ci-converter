@@ -1,4 +1,4 @@
-import pdfParse from "pdf-parse/lib/pdf-parse.js";
+﻿import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import { readFileSync } from "fs";
@@ -43,6 +43,14 @@ function splitItemColour(combined) {
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
+// parseInt/parseFloat return NaN on anything unparseable, and every fall-through
+// in the split functions ended in one. A NaN quantity reached ExcelJS, which
+// writes it verbatim as <v>NaN</v> in a numeric cell — not valid SpreadsheetML,
+// so Excel opens with the "we found a problem with some content" repair dialog.
+// The result was a 200 OK with an unopenable attachment. The goods-total reader
+// already had this guard; the per-line readers never got it.
+const finiteOr0 = (n) => (Number.isFinite(n) ? n : 0);
+
 // How far qty × price may legitimately sit from the stated line total.
 // The invoice prints the unit price to two decimals, but bills at more: a line
 // of 4 at a true 79,005 shows "79,01" and totals 316,02, while 4 × 79,01 gives
@@ -59,7 +67,7 @@ function parseQtyPrice(combined, totalCHF, discountCHF = 0) {
   //   Format B (per-unit discount): total = qty × (price - disc_unit) → total/qty ≈ price-disc
   const s        = combined.trim();
   const commaIdx = s.indexOf(",");
-  if (commaIdx < 0) return { qty: parseInt(s, 10), price: 0, discMult: 1 };
+  if (commaIdx < 0) return { qty: finiteOr0(parseInt(s, 10)), price: 0, discMult: 1 };
   const intPart      = s.slice(0, commaIdx);
   const decPart      = s.slice(commaIdx + 1).trim();
   const expectedProd = round2(totalCHF + discountCHF);
@@ -88,7 +96,7 @@ function parseQtyPrice(combined, totalCHF, discountCHF = 0) {
     if (Math.abs(totalCHF / qty - (price - discountCHF)) < 0.02) return { qty, price, discMult: qty };
   }
 
-  return { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`), discMult: 1 };
+  return { qty: finiteOr0(parseInt(intPart, 10)), price: finiteOr0(parseFloat(`0.${decPart}`)), discMult: 1 };
 }
 
 function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
@@ -99,7 +107,7 @@ function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
   // this function can produce, so it must report the worst possible diff —
   // omitting it made the uncertainty comparison false and marked this
   // exact case as certain.
-  if (commaIdx < 0) return { qty: parseInt(s, 10), price: 0, discMult: 1, diff: Infinity };
+  if (commaIdx < 0) return { qty: finiteOr0(parseInt(s, 10)), price: 0, discMult: 1, diff: Infinity };
   const intPart  = s.slice(0, commaIdx);
   const decPart  = s.slice(commaIdx + 1).trim();
   const target   = round2(totalCHF + discountCHF);
@@ -123,7 +131,7 @@ function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
   // Without it this function silently returned its closest attempt no matter how
   // far off, and quantity is a customs-declared field.
   if (best) return { ...best, diff: bestDiff };
-  return { qty: parseInt(intPart, 10), price: parseFloat(`0.${decPart}`), discMult: 1, diff: Infinity };
+  return { qty: finiteOr0(parseInt(intPart, 10)), price: finiteOr0(parseFloat(`0.${decPart}`)), discMult: 1, diff: Infinity };
 }
 
 // A split is uncertain when it sits further from the line total than the price
@@ -833,7 +841,10 @@ async function buildExcel(invoice) {
 
     const cd = (colNum, value, extra = {}) => {
       const cell = ws.getCell(r, colNum);
-      cell.value = value;
+      // Last line of defence: ExcelJS writes a non-finite number verbatim as
+      // <v>NaN</v>, which is not valid SpreadsheetML and makes Excel offer to
+      // repair the file. An empty cell is honest; a corrupt workbook is not.
+      cell.value = (typeof value === "number" && !Number.isFinite(value)) ? "" : value;
       cell.font  = hFont;
       if (altFill) cell.fill = altFill;
       cell.border = bdr;
