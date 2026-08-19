@@ -5,7 +5,16 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
-export const config = { api: { bodyParser: { sizeLimit: "10mb" } } };
+// There used to be `export const config = { api: { bodyParser: { sizeLimit:
+// "10mb" } } }` here. That is Next.js API-route syntax and this is a Vite SPA on
+// @vercel/node, so it did nothing — the code believed it had a 10 MB budget while
+// the real ceiling is Vercel's own request cap. Measured live: a 4 MB body
+// reaches the function, 5 MB gets a platform 413 the code never sees.
+//
+// So the effective limit is roughly a 3.3 MB PDF once base64 inflation is
+// counted. The largest real invoice is 2.1 MB, which is less headroom than
+// anyone would assume from that deleted line. The guards that actually bind are
+// MAX_BASE64_CHARS and MAX_TEXT_CHARS below, both enforced in this file.
 
 // ── O'Neill item-number database ───────────────────────────────────────────
 // 15K+ item codes exported from ERP. Used as fallback when the regex patterns
@@ -1108,8 +1117,23 @@ export default async function handler(req, res) {
   }
 }
 
+// The app is served from the same origin as this function, so it needs no CORS
+// header at all. `*` was granting cross-origin access nothing here uses.
+// It was never the vulnerability people assume — there are no cookies, so a
+// browser request was never more powerful than curl — but narrowing it costs
+// nothing and keeps the surface honest. A same-origin request carries no Origin
+// header for simple POSTs, so anything that does send one is not the app.
+const ALLOWED_ORIGINS = [
+  "https://oneill-ci-converter-lemon.vercel.app",
+  "http://localhost:5173",
+];
+
 async function handleConvert(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const origin = req.headers?.origin;
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
 
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
