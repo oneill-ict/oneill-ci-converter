@@ -113,9 +113,6 @@ const i18n = {
     anyway:        "Toch",
     silentGapNote: (n) => `Let op: ${n} itemnummer(s) uit de PDF zijn niet in de export opgenomen —`,
     degradedNote:  "De controlegegevens konden niet worden uitgelezen. Het Excel is aangemaakt, maar de waarschuwingen hieronder zijn mogelijk onvolledig — controleer dit bestand handmatig.",
-    uncertainQtyNote: (n) => n === 1
-      ? "Let op: bij 1 regel kon het aantal niet uit de factuur worden afgeleid — het getal in de export is een schatting. Controleer:"
-      : `Let op: bij ${n} regels kon het aantal niet uit de factuur worden afgeleid — die getallen zijn een schatting. Controleer:`,
     noWeightNote: (n) => n === 1
       ? "Let op: bij 1 regel staat geen brutogewicht op de factuur. Die cel blijft leeg in het Excel — vul hem handmatig aan:"
       : `Let op: bij ${n} regels staat geen brutogewicht op de factuur. Die cellen blijven leeg in het Excel — vul ze handmatig aan:`,
@@ -225,9 +222,6 @@ const i18n = {
     anyway:        "Anyway",
     silentGapNote: (n) => `Note: ${n} item number(s) from the PDF were not included in the export —`,
     degradedNote:  "The validation data could not be read. The Excel was created, but the warnings below may be incomplete — check this file by hand.",
-    uncertainQtyNote: (n) => n === 1
-      ? "Note: on 1 line the quantity could not be derived from the invoice — the number in the export is an estimate. Please check:"
-      : `Note: on ${n} lines the quantity could not be derived from the invoice — those numbers are estimates. Please check:`,
     noWeightNote: (n) => n === 1
       ? "Note: 1 line has no gross weight on the invoice. That cell is left empty in the Excel — fill it in by hand:"
       : `Note: ${n} lines have no gross weight on the invoice. Those cells are left empty in the Excel — fill them in by hand:`,
@@ -317,7 +311,6 @@ async function convertFile(file, force = false, t) {
       // Normalise at the boundary so no component downstream has to know which
       // shape it got. Three consumers each guessed; one of them guessed wrong.
       e.unparsedItemNos  = (err.unparsedItemNos || []).map(r => typeof r === "string" ? r : r.itemNo);
-      e.uncertainLines   = err.uncertainLines   || [];
       e.noWeightLines    = err.noWeightLines    || [];
       // Which axis failed, straight from the server rather than inferred.
       e.qtyOk            = err.qtyOk;
@@ -349,8 +342,6 @@ async function convertFile(file, force = false, t) {
   const unparsedItemNos  = parseHeader(res.headers.get("X-Unparsed-Items"), false);
   // The list is capped server-side; the count is the true total.
   const unparsedCount    = parseInt(res.headers.get("X-Unparsed-Count") || "0", 10) || unparsedItemNos.length;
-  const uncertainItems   = parseHeader(res.headers.get("X-Uncertain-Items"), false);
-  const uncertainCount   = parseInt(res.headers.get("X-Uncertain-Count") || "0", 10) || uncertainItems.length;
   // Lines with no gross weight — a customs-declared field left blank.
   const noWeightItems    = parseHeader(res.headers.get("X-NoWeight-Items"), false);
   const noWeightCount    = parseInt(res.headers.get("X-NoWeight-Count") || "0", 10) || noWeightItems.length;
@@ -364,7 +355,7 @@ async function convertFile(file, force = false, t) {
   if (!preview.length && qty > 0) degraded = true;
   const blob             = await res.blob();
   return { blob, qty, total, checked, qtyChecked, totalChecked, lineCount, preview, degraded,
-    unparsedItemNos, unparsedCount, uncertainItems, uncertainCount,
+    unparsedItemNos, unparsedCount,
     noWeightItems, noWeightCount };
 }
 
@@ -443,8 +434,7 @@ export default function App() {
       try {
         const c = await convertFile(file, false, t);
         const row = { name: file.name, xlsxName, ...c,
-          unparsedItemNos: c.unparsedItemNos || [], uncertainItems: c.uncertainItems || [],
-          uncertainCount: c.uncertainCount || 0,
+          unparsedItemNos: c.unparsedItemNos || [],
           error: null, isPartial: false, file };
         // Single file: trigger immediate download, under the status-carrying name
         if (pdfs.length === 1) triggerDownload(row.blob, exportNameFor(row, t));
@@ -461,8 +451,6 @@ export default function App() {
             missedRows: e.missedRows || [],
             unparsedItemNos: e.unparsedItemNos || [],
             unparsedCount: (e.unparsedItemNos || []).length,
-            uncertainItems: (e.uncertainLines || []).map(x => x.itemNo),
-            uncertainCount: (e.uncertainLines || []).length,
             noWeightItems: e.noWeightLines || [],
             noWeightCount: (e.noWeightLines || []).length,
             qtyOk: e.qtyOk, totalOk: e.totalOk,
@@ -684,6 +672,10 @@ function trustOf(r) {
   if (r.isPartial)            return { ok: false, kind: "partial" };
   if (r.checked === false)    return { ok: false, kind: "unchecked" };
  if (r.noWeightCount > 0)    return { ok: false, kind: "noweight" };
+  // Nothing sets uncertainCount any more — no quantity is guessed, so no line can
+  // carry an unreconciled split. The check stays for history entries written while
+  // it could: dropping it would quietly repaint a past amber run as green, and the
+  // export that run produced is still on someone's disk with its own marker.
   if (r.uncertainCount > 0)   return { ok: false, kind: "uncertain" };
   if (r.unparsedCount > 0)    return { ok: false, kind: "gaps" };
   // Diagnostics unreadable: the absence of warnings proves nothing here.
@@ -1060,69 +1052,6 @@ function PartialWarning({ result, onForceDownload, t }) {
         {result.blob ? t.redownload : t.downloadAnyway}
       </button>
     </div>
-  );
-}
-
-// Lines whose quantity/price split could not be reconciled with the line total.
-// The invoice total still adds up, so validation passes and nothing else in the
-// UI would ever mention it — but the quantity is what gets declared to customs.
-function UncertainQtyWarning({ items, count, t }) {
-  if (!count) return null;
-  const list = items || [];
-  return (
-    <div style={{
-      background: T.panelDeep, border: `1px solid #5a4400`, borderRadius: 8,
-      padding: "0.6rem 0.85rem", marginBottom: "0.75rem",
-      display: "flex", alignItems: "flex-start", gap: "0.5rem",
-    }}>
-      <AlertTriangle size={13} color="#c78c00" style={{ marginTop: 2, flexShrink: 0 }} />
-      <p style={{ fontSize: "0.72rem", color: T.textDim, lineHeight: 1.5, margin: 0 }}>
-        {t.uncertainQtyNote(count)}{" "}
-        {list.length > 0 && (
-          <span style={{ fontFamily: "JetBrains Mono, monospace", color: T.textMute }}>
-            {list.slice(0, 12).join(", ")}{list.length > 12 ? ` +${list.length - 12}` : ""}
-          </span>
-        )}
-      </p>
-    </div>
-  );
-}
-
-// ExcelDriftWarning lived here. It reported the workbook disagreeing with the
-// invoice, which happened because the Total column recomputed each line from a
-// unit price rounded to two decimals. The workbook now carries the invoice's own
-// line totals, so there is nothing left to disagree — the warning went away with
-// its cause rather than being suppressed.
-
-// The diagnostic headers were unreadable. Say so: an empty list would otherwise
-// read as "nothing to report" — the same appearance as a clean conversion.
-function DegradedWarning({ result, t }) {
-  if (!result.degraded) return null;
-  return (
-    <div style={{
-      background: T.panelDeep, border: `1px solid #5a4400`, borderRadius: 8,
-      padding: "0.6rem 0.85rem", marginBottom: "0.75rem",
-      display: "flex", alignItems: "flex-start", gap: "0.5rem",
-    }}>
-      <AlertTriangle size={13} color="#c78c00" style={{ marginTop: 2, flexShrink: 0 }} />
-      <p style={{ fontSize: "0.72rem", color: T.textDim, lineHeight: 1.5, margin: 0 }}>{t.degradedNote}</p>
-    </div>
-  );
-}
-
-// Every warning a result can carry, in one place. Each of these used to be
-// placed by hand per screen, and each time a new screen appeared they were
-// wired into only one of them — three audits running. A screen now renders
-// this component and gets all of them, including any added later.
-function ResultWarnings({ result, t }) {
-  if (!result) return null;
-  return (
-    <>
-      <DegradedWarning result={result} t={t} />
-      <SilentGapWarning unparsedItemNos={result.unparsedItemNos} count={result.unparsedCount} t={t} />
-      <UncertainQtyWarning items={result.uncertainItems} count={result.uncertainCount} t={t} />
-      <NoWeightWarning result={result} t={t} />
-    </>
   );
 }
 
