@@ -51,6 +51,19 @@ const round2 = (n) => Math.round(n * 100) / 100;
 // already had this guard; the per-line readers never got it.
 const finiteOr0 = (n) => (Number.isFinite(n) ? n : 0);
 
+// Filenames come off the user's disk and in practice carry customer names
+// ("CI CH B2B", "Test PDF CH met AT klanten"). The logs are for spotting
+// patterns across conversions, which needs a stable identifier, not the name.
+// Keep the extension and a short digest so the same file is recognisable across
+// entries without the name itself sitting in the log.
+function logSafeName(name) {
+  if (typeof name !== "string" || !name) return null;
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (Math.imul(31, h) + name.charCodeAt(i)) | 0;
+  const ext = (name.match(/\.[^.]{1,6}$/) || [""])[0].toLowerCase();
+  return `${(h >>> 0).toString(36)}${ext}`;
+}
+
 // Text that Excel would read as a formula if the workbook is ever exported to
 // CSV and reopened. The .xlsx itself is safe — ExcelJS writes these as string
 // cells and Excel does not reinterpret them on open — but the leading character
@@ -1160,7 +1173,7 @@ async function handleConvert(req, res) {
   const invoice = parseInvoiceText(pdfData.text);
 
   if (invoice.items.length === 0) {
-    console.log(JSON.stringify({ event: "ci_no_items", filename: filename || null, currency: invoice.currency }));
+    console.log(JSON.stringify({ event: "ci_no_items", file: logSafeName(filename), currency: invoice.currency }));
     return res.status(422).json({
       error: "Geen factuurregels gevonden. Controleer of dit een O'Neill Commercial Invoice is.",
     });
@@ -1171,7 +1184,7 @@ async function handleConvert(req, res) {
   // sign-flipped. Deliberately not forceable: the numbers are wrong, not merely
   // unverified. No parsedQty in the body, so the client shows a plain error.
   if (invoice.creditNote) {
-    console.log(JSON.stringify({ event: "ci_credit_note", filename: filename || null }));
+    console.log(JSON.stringify({ event: "ci_credit_note", file: logSafeName(filename) }));
     return res.status(422).json({
       error: "Dit lijkt een creditnota (negatieve bedragen). Die worden nog niet ondersteund — de bedragen zouden zonder minteken in het Excel komen. Maak deze handmatig op.",
     });
@@ -1183,7 +1196,7 @@ async function handleConvert(req, res) {
   // Fires regardless of outcome so we can spot patterns without waiting for user reports.
   console.log(JSON.stringify({
     event:          "ci_conversion",
-    filename:       filename || null,
+    file:           logSafeName(filename),
     currency:       invoice.currency,
     itemsFound:     invoice.items.length,
     parsedQty:      v?.parsedQty    ?? null,
