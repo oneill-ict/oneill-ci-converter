@@ -1,0 +1,274 @@
+{
+ "name": "eur-three-rows",
+ "describes": "the smallest complete invoice: 3 rows, one page, EUR",
+ "builtBy": "make-fixtures.mjs — do not hand-edit; the source invoice is not in this repo",
+ "kept": "only the column header, the item rows and the tariff subtotal rows. Everything else — addresses, document and order numbers, the customs agent block, VAT and ZAZ account numbers, boilerplate — is excluded by shape, not by a list of things to remove.",
+ "expected": {
+  "rows": 3,
+  "quantity": 3,
+  "total": 156.51,
+  "currency": "EUR",
+  "footerQuantity": 3,
+  "footerTotal": 156.51,
+  "discountPerPiece": false,
+  "rowsWithoutWeight": 0,
+  "rowsWithoutPrice": 0,
+  "rowsWithDiscount": 0,
+  "columnsFound": 12,
+  "columnsNamed": 12,
+  "skipped": 0,
+  "pages": 1
+ },
+ "lines": [
+  {
+   "page": 1,
+   "y": 318.04,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "Item No."
+    },
+    {
+     "x": 68.92,
+     "text": "Item"
+    },
+    {
+     "x": 279.29,
+     "text": "Colour"
+    },
+    {
+     "x": 339.29,
+     "text": "Colour no."
+    },
+    {
+     "x": 391.79,
+     "text": "Item group"
+    },
+    {
+     "x": 511.79,
+     "text": "Tariff No."
+    },
+    {
+     "x": 571.79,
+     "text": "Nett weight"
+    },
+    {
+     "x": 631.79,
+     "text": "Quantity"
+    },
+    {
+     "x": 721.79,
+     "text": "Discount"
+    },
+    {
+     "x": 781.79,
+     "text": "Total"
+    }
+   ]
+  },
+  {
+   "page": 1,
+   "y": 300.04,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "2350132"
+    },
+    {
+     "x": 68.92,
+     "text": "FWC'Play POLARTEC FLEECE"
+    },
+    {
+     "x": 279.29,
+     "text": "Black Out"
+    },
+    {
+     "x": 339.29,
+     "text": "19010"
+    },
+    {
+     "x": 391.79,
+     "text": "Fleeces"
+    },
+    {
+     "x": 451.79,
+     "text": "Myanmar"
+    },
+    {
+     "x": 511.79,
+     "text": "6110309100"
+    },
+    {
+     "x": 571.79,
+     "text": "420,00 gr"
+    },
+    {
+     "x": 631.79,
+     "text": "1"
+    },
+    {
+     "x": 676.79,
+     "text": "39,13 EUR"
+    },
+    {
+     "x": 721.79,
+     "text": "0,00 EUR"
+    },
+    {
+     "x": 781.79,
+     "text": "39,13 EUR"
+    }
+   ]
+  },
+  {
+   "page": 1,
+   "y": 286.54,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "3500052"
+    },
+    {
+     "x": 68.92,
+     "text": "FWC'Play SNOW JACKET"
+    },
+    {
+     "x": 279.29,
+     "text": "White Cluster"
+    },
+    {
+     "x": 339.29,
+     "text": "31049"
+    },
+    {
+     "x": 391.79,
+     "text": "Jackets Snow"
+    },
+    {
+     "x": 451.79,
+     "text": "Vietnam"
+    },
+    {
+     "x": 511.79,
+     "text": "6210300090"
+    },
+    {
+     "x": 571.79,
+     "text": "710,00 gr"
+    },
+    {
+     "x": 631.79,
+     "text": "1"
+    },
+    {
+     "x": 676.79,
+     "text": "69,56 EUR"
+    },
+    {
+     "x": 721.79,
+     "text": "0,00 EUR"
+    },
+    {
+     "x": 781.79,
+     "text": "69,56 EUR"
+    }
+   ]
+  },
+  {
+   "page": 1,
+   "y": 273.04,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "3550055"
+    },
+    {
+     "x": 68.92,
+     "text": "FWC'Cruz SNOW PANTS"
+    },
+    {
+     "x": 279.29,
+     "text": "Island Breeze"
+    },
+    {
+     "x": 339.29,
+     "text": "15084"
+    },
+    {
+     "x": 391.79,
+     "text": "Pants Snow"
+    },
+    {
+     "x": 451.79,
+     "text": "Vietnam"
+    },
+    {
+     "x": 511.79,
+     "text": "6210500000"
+    },
+    {
+     "x": 571.79,
+     "text": "380,00 gr"
+    },
+    {
+     "x": 631.79,
+     "text": "1"
+    },
+    {
+     "x": 676.79,
+     "text": "47,82 EUR"
+    },
+    {
+     "x": 721.79,
+     "text": "0,00 EUR"
+    },
+    {
+     "x": 781.79,
+     "text": "47,82 EUR"
+    }
+   ]
+  },
+  {
+   "page": 1,
+   "y": 143.29,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "6110309100"
+    },
+    {
+     "x": 128.92,
+     "text": "39,13EUR"
+    }
+   ]
+  },
+  {
+   "page": 1,
+   "y": 129.79,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "6210300090"
+    },
+    {
+     "x": 128.92,
+     "text": "69,56EUR"
+    }
+   ]
+  },
+  {
+   "page": 1,
+   "y": 116.29,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "6210500000"
+    },
+    {
+     "x": 128.92,
+     "text": "47,82EUR"
+    }
+   ]
+  }
+ ]
+}

@@ -27,3 +27,6 @@ PROJECT-BLUEPRINT.md
 # Anything explicitly marked as not-for-deploy
 api/_*
 compare-*.mjs
+make-fixtures.mjs
+run-tests.mjs
+test/
