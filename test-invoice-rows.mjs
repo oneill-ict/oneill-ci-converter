@@ -6,7 +6,7 @@
 // invoices while every total still looked right — the exact silent-wrongness this
 // module exists to prevent.
 
-import { parseAmount, parseWeight, buildGrid } from "./lib/invoice-rows.mjs";
+import { parseAmount, parseWeight, buildGrid, readItemRows } from "./lib/invoice-rows.mjs";
 
 let pass = 0, fail = 0;
 const eq = (label, got, want) => {
@@ -56,5 +56,94 @@ const withStray = buildGrid([row(700, [...cols, 900]), row(687, cols), row(674, 
 eq("a one-off run is not a column", withStray.length, 12);
 eq("no item rows means no grid", buildGrid([]).length, 0);
 
-console.log(`\n${pass} geslaagd, ${fail} gefaald`);
+
+// ── Discount conventions ────────────────────────────────────────────────────
+// An invoice states its discount either for the whole line or per piece, and only a
+// row with a real discount on more than one piece can tell the two apart. Getting
+// this wrong is not loud: the first version of the reader tested only the per-line
+// form, so on the one per-piece template in the corpus the price column failed its
+// check and shipped 29 empty cells while the quantity and total still matched the
+// invoice footer.
+
+// The column positions and header labels of the real template. Two columns carry no
+// header on any template, which is why the reader has to infer them.
+const X = { itemNo: 16, item: 69, colour: 232, colourNo: 332, itemGroup: 385,
+            country: 445, tariffNo: 505, weight: 565, quantity: 625, price: 670,
+            discount: 715, total: 775 };
+const HEADER = ["Item No.", "Item", "Colour", "Colour no.", "Item group", null,
+                "Tariff No.", "Nett weight", "Quantity", null, "Discount", "Total"];
+const KEYS = Object.keys(X);
+const money = (n) => n.toFixed(2).replace(".", ",") + " EUR";
+
+function sheet(rows) {
+  const lines = [{
+    page: 1, y: 700,
+    runs: KEYS.map((k, i) => HEADER[i] && { x: X[k], text: HEADER[i] }).filter(Boolean),
+  }];
+  rows.forEach(([qty, price, disc, total], n) => {
+    const cells = {
+      itemNo: "1150059", item: "O'NEILL COASTAL TOTE", colour: "Peach Island Sky",
+      colourNo: "32546", itemGroup: "Bags", country: "China", tariffNo: "4202929890",
+      weight: "380,00 gr", quantity: String(qty), price: money(price),
+      discount: money(disc), total: money(total),
+    };
+    lines.push({ page: 1, y: 680 - n * 13, runs: KEYS.map(k => ({ x: X[k], text: cells[k] })) });
+  });
+  return lines;
+}
+
+console.log("kortingen per regel");
+{
+  const { rows, discountPerPiece, columns } = readItemRows(sheet([
+    [3, 20, 12, 48], [2, 10, 5, 15], [5, 4, 0, 20], [1, 9, 1, 8],
+  ]));
+  eq("vier regels gelezen", rows.length, 4);
+  eq("prijskolom benoemd", columns.filter(c => c.key === "price").length, 1);
+  eq("niet per stuk", discountPerPiece, false);
+  eq("regelkorting overgenomen", rows[0].discount, 12);
+  eq("prijs gelezen", rows[0].price, 20);
+}
+
+console.log("kortingen per stuk");
+{
+  // The real shape from CI Bens Surf Clinic: 3 x (17,39 - 6,09) = 33,90.
+  const { rows, discountPerPiece, columns } = readItemRows(sheet([
+    [3, 17.39, 6.09, 33.90], [19, 13.04, 4.56, 161.12], [2, 15.21, 6.84, 16.74], [1, 19.56, 6.85, 12.71],
+  ]));
+  eq("vier regels gelezen", rows.length, 4);
+  eq("prijskolom benoemd", columns.filter(c => c.key === "price").length, 1);
+  eq("per stuk herkend", discountPerPiece, true);
+  eq("prijs gelezen", rows[0].price, 17.39);
+  // 6,09 per piece x 3 = 18,27 for the line, so the workbook reconciles.
+  eq("korting genormaliseerd naar de regel", rows[0].discount, 18.27);
+  eq("regel reproduceert het totaal",
+     Math.round((rows[0].quantity * rows[0].price - rows[0].discount) * 100) / 100, 33.90);
+  eq("ook op de grote regel", rows[1].discount, 86.64);
+}
+
+console.log("geen kortingen: blijft per regel");
+{
+  const { discountPerPiece } = readItemRows(sheet([[3, 20, 0, 60], [2, 10, 0, 20], [5, 4, 0, 20]]));
+  eq("standaard per regel", discountPerPiece, false);
+}
+
+console.log("regels van 1 stuk kunnen niets onderscheiden");
+{
+  const { discountPerPiece, rows } = readItemRows(sheet([[1, 20, 5, 15], [1, 10, 2, 8], [1, 4, 1, 3]]));
+  eq("blijft per regel", discountPerPiece, false);
+  eq("korting ongewijzigd", rows[0].discount, 5);
+}
+
+console.log("een prijskolom die geen van beide vormen reproduceert blijft naamloos");
+{
+  const { rows, columns } = readItemRows(sheet([
+    [3, 99, 0, 48], [2, 99, 0, 15], [5, 99, 0, 20], [4, 99, 0, 11],
+  ]));
+  eq("prijskolom niet benoemd", columns.filter(c => c.key === "price").length, 0);
+  eq("prijs leeg gelaten in plaats van geraden", rows[0].price, null);
+  eq("aantal en totaal nog wel gelezen", `${rows[0].quantity}/${rows[0].total}`, "3/48");
+}
+
+console.log(`
+${pass} geslaagd, ${fail} gefaald`);
 process.exit(fail ? 1 : 0);
