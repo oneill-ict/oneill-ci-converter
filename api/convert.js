@@ -2,7 +2,7 @@
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import { extractLines, readItemRows } from "../lib/invoice-rows.mjs";
-import { readGoodsTotal, parseEuropeanNumber, round2 } from "../lib/invoice-footer.mjs";
+import { readGoodsTotal, agreesWithFooter, parseEuropeanNumber, round2 } from "../lib/invoice-footer.mjs";
 import { findCity } from "../lib/invoice-address.mjs";
 
 // There used to be `export const config = { api: { bodyParser: { sizeLimit:
@@ -128,24 +128,15 @@ function parseInvoiceText(text, lines) {
   }));
 
   // ── Validate against the invoice's own footer ─────────────────────────────
-  const parsedQty   = invoice.items.reduce((s, i) => s + i.quantity, 0);
-  const parsedTotal = round2(invoice.items.reduce((s, i) => s + i.total, 0));
-
-  // The printed unit price is rounded to 2 decimals while the line total is
-  // computed from the unrounded one — 2 x 28,83 prints as 57,65, not 57,66 — so
-  // the footer can differ from the sum of the printed line totals by up to half a
-  // cent per affected line. The bound is derived from that count instead of picked,
-  // and stays far below the value of any real missing line. Compared in whole
-  // cents: at 0.03 against a 0.03 bound, binary floating point put the difference
-  // 2e-13 over and the check failed on noise rather than on money.
-  const roundedLines = invoice.items.filter(i =>
-    i.pricePerPiece != null &&
-    Math.abs(round2(i.quantity * i.pricePerPiece - i.discount) - i.total) > 0.001).length;
-  const cents = (n) => Math.round(n * 100);
-
-  const totalOk = expectedTotal === null ||
-    Math.abs(cents(parsedTotal) - cents(expectedTotal)) <= roundedLines * 0.5 + 1;
-  const qtyOk   = expectedQty === null || parsedQty === expectedQty;
+  // One shared rule, in lib/, so the handler and every test harness apply the same
+  // one. See agreesWithFooter for why the tolerance is what it is.
+  const check = agreesWithFooter(
+    invoice.items.map(i => ({
+      quantity: i.quantity, total: i.total, price: i.pricePerPiece, discount: i.discount,
+    })),
+    { qty: expectedQty, total: expectedTotal },
+  );
+  const { quantity: parsedQty, total: parsedTotal, qtyOk, totalOk } = check;
 
   // Lines with no per-line gross weight. One template states it only in the
   // header, so an empty cell is a real case, not a parse failure — but it has to
