@@ -1,0 +1,294 @@
+{
+ "name": "weightless-template",
+ "describes": "the only template that states gross weight in the header instead of per line",
+ "builtBy": "make-fixtures.mjs — do not hand-edit; the source invoice is not in this repo",
+ "kept": "only the column header, the item rows and the tariff subtotal rows. Everything else — addresses, document and order numbers, the customs agent block, VAT and ZAZ account numbers, boilerplate — is excluded by shape, not by a list of things to remove.",
+ "expected": {
+  "rows": 4,
+  "quantity": 4,
+  "total": 399.98,
+  "currency": "EUR",
+  "footerQuantity": 4,
+  "footerTotal": 399.98,
+  "discountPerPiece": false,
+  "rowsWithoutWeight": 4,
+  "rowsWithoutPrice": 0,
+  "rowsWithDiscount": 0,
+  "columnsFound": 11,
+  "columnsNamed": 11,
+  "skipped": 0,
+  "pages": 1
+ },
+ "lines": [
+  {
+   "page": 1,
+   "y": 303.04,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "Item No."
+    },
+    {
+     "x": 68.92,
+     "text": "Item"
+    },
+    {
+     "x": 339.29,
+     "text": "Colour"
+    },
+    {
+     "x": 399.29,
+     "text": "Colour no."
+    },
+    {
+     "x": 451.79,
+     "text": "Item group"
+    },
+    {
+     "x": 571.79,
+     "text": "Tariff No."
+    },
+    {
+     "x": 631.79,
+     "text": "Quantity"
+    },
+    {
+     "x": 721.79,
+     "text": "Discount"
+    },
+    {
+     "x": 781.79,
+     "text": "Total"
+    }
+   ]
+  },
+  {
+   "page": 1,
+   "y": 285.04,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "2500055"
+    },
+    {
+     "x": 68.92,
+     "text": "O'RIGINALS ANORAK JACKET"
+    },
+    {
+     "x": 339.29,
+     "text": "Black Out"
+    },
+    {
+     "x": 399.29,
+     "text": "19010"
+    },
+    {
+     "x": 451.79,
+     "text": "Jackets"
+    },
+    {
+     "x": 511.79,
+     "text": "Vietnam"
+    },
+    {
+     "x": 571.79,
+     "text": "6210200090"
+    },
+    {
+     "x": 631.79,
+     "text": "1"
+    },
+    {
+     "x": 676.79,
+     "text": "113,04 EUR"
+    },
+    {
+     "x": 721.79,
+     "text": "0,00 EUR"
+    },
+    {
+     "x": 781.79,
+     "text": "113,04 EUR"
+    }
+   ]
+  },
+  {
+   "page": 1,
+   "y": 271.54,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "2500056"
+    },
+    {
+     "x": 68.92,
+     "text": "UTILITY JACKET"
+    },
+    {
+     "x": 339.29,
+     "text": "Black Out"
+    },
+    {
+     "x": 399.29,
+     "text": "19010"
+    },
+    {
+     "x": 451.79,
+     "text": "Jackets"
+    },
+    {
+     "x": 511.79,
+     "text": "Vietnam"
+    },
+    {
+     "x": 571.79,
+     "text": "6210200090"
+    },
+    {
+     "x": 631.79,
+     "text": "1"
+    },
+    {
+     "x": 676.79,
+     "text": "121,73 EUR"
+    },
+    {
+     "x": 721.79,
+     "text": "0,00 EUR"
+    },
+    {
+     "x": 781.79,
+     "text": "121,73 EUR"
+    }
+   ]
+  },
+  {
+   "page": 1,
+   "y": 258.04,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "2550121"
+    },
+    {
+     "x": 68.92,
+     "text": "O'RIGINALS BIB LOOSE SNOW PANTS"
+    },
+    {
+     "x": 339.29,
+     "text": "Black Out"
+    },
+    {
+     "x": 399.29,
+     "text": "19010"
+    },
+    {
+     "x": 451.79,
+     "text": "Pants"
+    },
+    {
+     "x": 511.79,
+     "text": "Myanmar"
+    },
+    {
+     "x": 571.79,
+     "text": "6210400000"
+    },
+    {
+     "x": 631.79,
+     "text": "1"
+    },
+    {
+     "x": 676.79,
+     "text": "86,95 EUR"
+    },
+    {
+     "x": 721.79,
+     "text": "0,00 EUR"
+    },
+    {
+     "x": 781.79,
+     "text": "86,95 EUR"
+    }
+   ]
+  },
+  {
+   "page": 1,
+   "y": 244.54,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "2550122"
+    },
+    {
+     "x": 68.92,
+     "text": "UTILITY REGULAR SNOW PANTS"
+    },
+    {
+     "x": 339.29,
+     "text": "Black Out"
+    },
+    {
+     "x": 399.29,
+     "text": "19010"
+    },
+    {
+     "x": 451.79,
+     "text": "Pants"
+    },
+    {
+     "x": 511.79,
+     "text": "Myanmar"
+    },
+    {
+     "x": 571.79,
+     "text": "6210400000"
+    },
+    {
+     "x": 631.79,
+     "text": "1"
+    },
+    {
+     "x": 676.79,
+     "text": "78,26 EUR"
+    },
+    {
+     "x": 721.79,
+     "text": "0,00 EUR"
+    },
+    {
+     "x": 781.79,
+     "text": "78,26 EUR"
+    }
+   ]
+  },
+  {
+   "page": 1,
+   "y": 114.79,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "6210200090"
+    },
+    {
+     "x": 128.92,
+     "text": "234,77 EUR"
+    }
+   ]
+  },
+  {
+   "page": 1,
+   "y": 101.29,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "6210400000"
+    },
+    {
+     "x": 128.92,
+     "text": "165,21 EUR"
+    }
+   ]
+  }
+ ]
+}

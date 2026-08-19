@@ -13,6 +13,13 @@
 
 import { spawnSync, execSync } from "node:child_process";
 
+// A skipping test writes this at the start of a line and exits 0. An exact sentinel,
+// not a word looked for anywhere in the output: matching loosely reported
+// test-fixtures.mjs as skipped because one of its own assertions is labelled
+// "overgeslagen regels", and a test that stalled could have passed itself off as
+// skipped the same way.
+const SKIP_MARK = "SKIP:";
+
 const files = execSync("git ls-files test-*.mjs compare-*.mjs", { encoding: "utf8" })
   .split("\n").map(s => s.trim()).filter(Boolean);
 
@@ -31,8 +38,9 @@ for (const file of files) {
   const out = (r.stdout || "") + (r.stderr || "");
   const ms = Date.now() - t0;
 
-  if (r.status === 0 && /overgeslagen/i.test(out)) {
-    console.log(`  skip  ${file.padEnd(30)} ${out.trim().split("\n").pop()}`);
+  const skipLine = out.split("\n").find(l => l.trim().startsWith(SKIP_MARK));
+  if (r.status === 0 && skipLine) {
+    console.log(`  skip  ${file.padEnd(30)} ${skipLine.trim().slice(SKIP_MARK.length).trim()}`);
     skipped.push(file);
   } else if (r.status === 0) {
     console.log(`  ok    ${file.padEnd(30)} ${ms} ms`);

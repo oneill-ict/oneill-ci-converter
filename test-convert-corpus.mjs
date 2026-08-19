@@ -16,7 +16,7 @@ import handler from "./api/convert.js";
 // CI the test skips rather than failing, so one command covers both.
 const BASE = process.env.CI_CORPUS_DIR || "C:/Users/sjoerd.lier/Downloads/ci-training-files";
 if (!fs.existsSync(BASE)) {
-  console.log("facturencorpus niet aanwezig - overgeslagen");
+  console.log("SKIP: facturencorpus niet aanwezig");
   process.exit(0);
 }
 const find = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap(e => {
