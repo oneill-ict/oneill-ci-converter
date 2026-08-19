@@ -13,7 +13,14 @@ import { readGoodsTotal } from "./lib/invoice-footer.mjs";
 
 const require  = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
-const BASE     = "C:/Users/sjoerd.lier/Downloads/ci-training-files";
+// The corpus is not in the repository: these are real customer invoices with names
+// and addresses on them. Point CI_CORPUS_DIR at the folder to run this locally; in
+// CI the test skips rather than failing, so one command covers both.
+const BASE = process.env.CI_CORPUS_DIR || "C:/Users/sjoerd.lier/Downloads/ci-training-files";
+if (!fs.existsSync(BASE)) {
+  console.log("facturencorpus niet aanwezig - overgeslagen");
+  process.exit(0);
+}
 
 const findPdfs = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => {
   const p = path.join(dir, e.name);
