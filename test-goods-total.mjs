@@ -1,6 +1,6 @@
 // Unit tests for readGoodsTotal — the footer reader that decides whether an
 // invoice gets validated at all. Run: node test-goods-total.mjs
-import { readGoodsTotal } from "./test-batch.mjs";
+import { readGoodsTotal } from "./lib/invoice-footer.mjs";
 
 const CASES = [
   // ── The two real layouts ──────────────────────────────────────────────────
