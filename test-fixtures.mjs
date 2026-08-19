@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { readItemRows } from "./lib/invoice-rows.mjs";
+import { agreesWithFooter } from "./lib/invoice-footer.mjs";
 
 const DIR = "test/fixtures";
 let pass = 0, fail = 0;
@@ -38,7 +39,6 @@ function isTableLine(line) {
 }
 
 const round2 = (n) => Math.round(n * 100) / 100;
-const cents  = (n) => Math.round(n * 100);
 
 for (const file of files) {
   const fx = JSON.parse(fs.readFileSync(path.join(DIR, file), "utf8"));
@@ -64,20 +64,14 @@ for (const file of files) {
   eq("overgeslagen regels",      skipped.length, e.skipped);
   eq("losse runs",               unplaced, 0);
 
-  // The invoice's own footer is the oracle: it was written by the ERP that produced
-  // the document, so agreeing with it means the reader got the real numbers.
-  const qty   = rows.reduce((s, r) => s + r.quantity, 0);
-  const total = round2(rows.reduce((s, r) => s + r.total, 0));
-  eq("aantal tegen de footer", qty, e.footerQuantity);
-
-  // The printed unit price is rounded to 2 decimals while the line total comes from
-  // the unrounded one, so the footer can differ from the sum of the printed line
-  // totals by up to half a cent per affected line. Compared in whole cents.
-  const roundedLines = rows.filter(r => r.price != null &&
-    Math.abs(round2(r.quantity * r.price - r.discount) - r.total) > 0.001).length;
-  const gap = Math.abs(cents(total) - cents(e.footerTotal));
-  eq(`totaal tegen de footer (${gap} cent verschil, grens ${roundedLines * 0.5 + 1})`,
-     gap <= roundedLines * 0.5 + 1, true);
+  // The invoice's own footer is the oracle: it was written by the ERP that produced the
+  // document, so agreeing with it means the reader got the real numbers. The rule lives
+  // in lib/ and is the same one the handler applies — restating it here is how a test
+  // ends up passing against a rule production no longer uses.
+  const agree = agreesWithFooter(rows, { qty: e.footerQuantity, total: e.footerTotal });
+  eq("aantal tegen de footer", agree.quantity, e.footerQuantity);
+  eq(`totaal tegen de footer (${agree.gap} cent verschil, grens ${agree.allowance})`,
+     agree.totalOk, true);
 
   // Every line has to reconcile on its own terms, whichever discount convention the
   // template uses. This is what caught nothing when the price column went unnamed.
