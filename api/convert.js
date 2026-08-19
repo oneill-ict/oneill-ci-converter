@@ -187,12 +187,11 @@ function parseInvoiceText(text, lines) {
     totalOk, qtyOk,
     missedRows,
     unparsedItemNos: [...new Map(missedRows.map(r => [r.itemNo, r])).values()],
-    // No quantity is guessed any more, so no line can carry an unreconciled
-    // split, and there is nothing for a repair pass to repair. Both stay as empty
-    // arrays while the frontend still reads them; removing those paths is the
-    // next change rather than this one.
-    uncertainLines: [],
-    repairs: [],
+    // Nothing reports an unreconciled quantity split any more, because nothing
+    // splits a quantity: it is read from its own column. So uncertainLines and
+    // repairs are gone from the response rather than sent as empty arrays, and the
+    // warning they fed is gone from the frontend.
+    //
     // Signs that the template moved: runs that fitted no column, and columns the
     // reader could not name. Reported rather than absorbed — absorbing a stray run
     // into its neighbour is what produced a wrong quantity on six invoices while
@@ -749,9 +748,6 @@ async function handleConvert(req, res) {
     missed:         (v?.missedRows || []).map(r => ({ itemNo: r.itemNo, reason: r.reason })).slice(0, 10),
     unparsedCount:  (v?.unparsedItemNos || []).length,
     unparsed:       (v?.unparsedItemNos || []).map(r => r.itemNo),
-    repairCount:    (v?.repairs || []).length,
-    uncertainCount: (v?.uncertainLines || []).length,
-    uncertain:      (v?.uncertainLines || []).map(r => r.itemNo).slice(0, 10),
   }));
 
   // Validation mismatch: return structured error so frontend can show a readable message.
@@ -768,7 +764,6 @@ async function handleConvert(req, res) {
       // the success path. It used to send {itemNo, context} objects here, so a
       // component that worked on one path rendered "[object Object]" on the other.
       unparsedItemNos:  (v.unparsedItemNos || []).map(r => r.itemNo),
-      uncertainLines:   v.uncertainLines,
       noWeightLines:    v.noWeightLines,
       // Which axis actually failed. Without these the client could only guess,
       // and it guessed "quantity" — the heading said the piece count did not
@@ -832,13 +827,6 @@ async function handleConvert(req, res) {
   if (unparsedNos.length > 0) {
     res.setHeader("X-Unparsed-Count", String(unparsedNos.length));
     setSafeHeader(res, "X-Unparsed-Items", JSON.stringify(unparsedNos.slice(0, 40)));
-  }
-  // Lines whose quantity is a guess. The totals can still add up, so this is the
-  // only signal the user gets that a declared quantity may be wrong.
-  const uncertain = v?.uncertainLines || [];
-  if (uncertain.length > 0) {
-    res.setHeader("X-Uncertain-Count", String(uncertain.length));
-    setSafeHeader(res, "X-Uncertain-Items", JSON.stringify(uncertain.slice(0, 40).map(r => r.itemNo)));
   }
   const noWeight = v?.noWeightLines || [];
   if (noWeight.length > 0) {
