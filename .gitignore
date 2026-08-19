@@ -3,3 +3,11 @@ dist/
 .env
 .env.local
 *.log
+
+.vercel
+.env*
+
+# Scratch scripts from investigation sessions. They are useful locally but must
+# never reach api/ or a deploy — see .vercelignore.
+audit-*.mjs
+api/_*

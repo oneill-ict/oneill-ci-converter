@@ -1,0 +1,28 @@
+# Everything here is excluded from a deploy.
+#
+# Vercel turns every file in api/ into a public endpoint. A CLI deploy
+# (`vercel deploy --prebuilt`) uploads the working tree, not just what git
+# tracks, so an untracked scratch file left in api/ becomes a second live
+# endpoint that drifts out of sync with the audited one. That nearly happened:
+# a 64 KB instrumented copy of convert.js sat in api/ for a while. It escaped
+# only because Vercel treats an underscore prefix as private.
+#
+# Nothing below is needed at runtime.
+
+# Test harnesses and scratch scripts
+test-*.mjs
+audit-*.mjs
+*.test.mjs
+gen_report.cjs
+
+# Sample invoices and generated workbooks — never ship customer data
+*.pdf
+*.xlsx
+*.xls
+
+# Notes and local tooling
+PROJECT-BLUEPRINT.md
+.claude/
+
+# Anything explicitly marked as not-for-deploy
+api/_*
