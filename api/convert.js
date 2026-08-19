@@ -51,6 +51,17 @@ const round2 = (n) => Math.round(n * 100) / 100;
 // already had this guard; the per-line readers never got it.
 const finiteOr0 = (n) => (Number.isFinite(n) ? n : 0);
 
+// Text that Excel would read as a formula if the workbook is ever exported to
+// CSV and reopened. The .xlsx itself is safe — ExcelJS writes these as string
+// cells and Excel does not reinterpret them on open — but the leading character
+// survives a Save As → CSV, and reopening that file makes Excel parse it.
+// A leading apostrophe forces text and is invisible in the cell.
+// Item names, colours and country names all come from the PDF, so this is the
+// one place parsed text could turn into something executable.
+const CSV_UNSAFE_START = /^[=+\-@\t\r]/;
+const csvSafe = (v) =>
+  (typeof v === "string" && CSV_UNSAFE_START.test(v)) ? "'" + v : v;
+
 // How far qty × price may legitimately sit from the stated line total.
 // The invoice prints the unit price to two decimals, but bills at more: a line
 // of 4 at a true 79,005 shows "79,01" and totals 316,02, while 4 × 79,01 gives
@@ -689,7 +700,9 @@ async function buildExcel(invoice) {
 
   const setCell = (row, colNum, value, style = {}) => {
     const cell = ws.getCell(row, colNum);
-    cell.value = value;
+    // Same CSV guard as the data rows — the billing name and address lines also
+    // come out of the PDF. Formula objects and numbers pass through untouched.
+    cell.value = csvSafe(value);
     cell.font = style.font || hFont;
     if (style.alignment) cell.alignment = style.alignment;
     if (style.fill)      cell.fill      = style.fill;
@@ -841,10 +854,13 @@ async function buildExcel(invoice) {
 
     const cd = (colNum, value, extra = {}) => {
       const cell = ws.getCell(r, colNum);
-      // Last line of defence: ExcelJS writes a non-finite number verbatim as
-      // <v>NaN</v>, which is not valid SpreadsheetML and makes Excel offer to
-      // repair the file. An empty cell is honest; a corrupt workbook is not.
-      cell.value = (typeof value === "number" && !Number.isFinite(value)) ? "" : value;
+      // Two last lines of defence, both for values that came out of the PDF:
+      // ExcelJS writes a non-finite number verbatim as <v>NaN</v>, which is not
+      // valid SpreadsheetML and makes Excel offer to repair the file; and text
+      // starting with = + - @ becomes a formula if the sheet is exported to CSV.
+      cell.value = (typeof value === "number" && !Number.isFinite(value))
+        ? ""
+        : csvSafe(value);
       cell.font  = hFont;
       if (altFill) cell.fill = altFill;
       cell.border = bdr;
