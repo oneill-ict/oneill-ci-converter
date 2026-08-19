@@ -1,4 +1,4 @@
-// Batch test: run all training PDFs through the current parser.
+﻿// Batch test: run all training PDFs through the current parser.
 // Run: node test-batch.mjs
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { readFileSync, readdirSync, statSync } from "fs";
@@ -93,6 +93,25 @@ function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
 
 const isUncertainSplit = (guess) => guess.diff > qtyTolerance(guess.qty);
 
+// Mirrors readAmountsBeforeCurrency() in api/convert.js.
+const AMOUNT_CHARS = new Set([..."0123456789., "]);
+const MAX_AMOUNT_LEN = 64;
+export function readAmountsBeforeCurrency(text) {
+  const re  = /(?<![A-Z])(?:CHF|EUR|GBP|USD|CAD)(?![A-Z])/g;
+  const out = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    let end = m.index;
+    while (end > 0 && /\s/.test(text[end - 1])) end--;
+    let start = end;
+    const floor = Math.max(0, end - MAX_AMOUNT_LEN);
+    while (start > floor && AMOUNT_CHARS.has(text[start - 1])) start--;
+    if (start === end) continue;
+    out.push({ amount: text.slice(start, end).trim(), end: m.index + m[0].length });
+  }
+  return out;
+}
+
 function extractCountry(groupCountry) {
   const trimmed = groupCountry.trim();
   const idx = trimmed.search(/(?<=[a-z])(?=[A-Z])/);
@@ -155,7 +174,10 @@ function parseInvoiceText(text) {
     const combined = a + b;
     return combined.length === 7 ? combined : m;
   });
-  flatText = flatText.replace(/Bei Waren[\s\S]*?(?=\d{4}[A-Z]|\d{7,8}|N\d{5,7})/g, '');
+  // Was missing the \d{4} [A-Z] and ONS[A-Z] alternatives that api/convert.js
+  // gained in the wetsuit fix — the harness had drifted from production on this
+  // one regex, so the batch test was not exercising what actually ships.
+  flatText = flatText.replace(/Bei Waren[\s\S]{0,400}?(?=\d{4}[A-Z]|\d{4} [A-Z]|ONS[A-Z]|\d{7,8}|N\d{5,7})/g, '');
   flatText = flatText.replace(/(CHF|EUR|GBP) {2,}/g, '$1 ');
 
   const itemsStart = flatText.indexOf("DiscountTotal");
@@ -225,18 +247,18 @@ function parseInvoiceText(text) {
       continue;
     }
     const afterTariffText = block.slice(tariffEnd);
-    const chfAfterTariff  = [...afterTariffText.matchAll(/([\d., ]+?)\s*(?<![A-Z])(?:CHF|EUR|GBP|USD|CAD)(?![A-Z])/g)];
+    const chfAfterTariff  = readAmountsBeforeCurrency(afterTariffText);
     if (chfAfterTariff.length < 3) {
       missedRows.push({ itemNo, reason: `${chfAfterTariff.length} currency values after tariff`, context: block.slice(0, 150).replace(/\s+/g, " ") });
       continue;
     }
     const first3       = chfAfterTariff.slice(0, 3);
-    const combined     = first3[0][1].trim();
-    const lineDiscount = parseEuropeanNumber(first3[1][1].trim());
-    const lineTotal    = parseEuropeanNumber(first3[2][1].trim());
+    const combined     = first3[0].amount;
+    const lineDiscount = parseEuropeanNumber(first3[1].amount);
+    const lineTotal    = parseEuropeanNumber(first3[2].amount);
 
     const _tariffBase   = tariffEnd;
-    const _firstItemEnd = _tariffBase + first3[2].index + first3[2][0].length;
+    const _firstItemEnd = _tariffBase + first3[2].end;
     const _embTail      = block.slice(_firstItemEnd).trimStart();
     if (_embTail.length > 20 && /\d{10}/.test(_embTail)) {
       blocks.splice(_bi + 1, 0, _embTail);

@@ -238,6 +238,38 @@ function readGoodsTotal(flatText) {
   return { qty: null, total: null };
 }
 
+// Amounts printed immediately before a currency token, in order.
+//
+// Replaces a lazy `([\d., ]+?)\s*CUR` scan. Its two halves could both match a
+// space, so every way of splitting a whitespace run between them had to be
+// tried: the cost was cubic, ~5,000 consecutive spaces took over 30 seconds, and
+// a crafted PDF could burn the entire function budget on an unauthenticated
+// endpoint. Walking backwards from each currency token has no ambiguity to
+// explore. Measured on 6,000 spaces: 70,455 ms before, 0.2 ms after, with
+// identical output on every real invoice shape.
+//
+// Returns { amount, end } where `end` is the index just past the currency token —
+// the embedded-item check needs that position.
+const AMOUNT_CHARS = new Set([..."0123456789., "]);
+const MAX_AMOUNT_LEN = 64;   // no real amount field comes close; bounds the walk
+
+function readAmountsBeforeCurrency(text) {
+  const re  = /(?<![A-Z])(?:CHF|EUR|GBP|USD|CAD)(?![A-Z])/g;
+  const out = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    // The old pattern allowed whitespace between the amount and the token.
+    let end = m.index;
+    while (end > 0 && /\s/.test(text[end - 1])) end--;
+    let start = end;
+    const floor = Math.max(0, end - MAX_AMOUNT_LEN);
+    while (start > floor && AMOUNT_CHARS.has(text[start - 1])) start--;
+    if (start === end) continue;                    // nothing numeric in front
+    out.push({ amount: text.slice(start, end).trim(), end: m.index + m[0].length });
+  }
+  return out;
+}
+
 // Returns the longest item code from ITEM_DB that starts at text[pos],
 // or null if nothing matches. minLen guards against 2-3 char false positives.
 function findDbItemAt(text, pos, minLen = 4) {
@@ -312,7 +344,12 @@ function parseInvoiceText(text) {
   // It lagged behind twice already: a wetsuit written "5551 Hyperfreak" or an
   // ONS code sitting right after this boilerplate would not stop the deletion,
   // so the item itself would be swallowed along with the disclaimer.
-  flatText = flatText.replace(/Bei Waren[\s\S]*?(?=\d{4}[A-Z]|\d{4} [A-Z]|ONS[A-Z]|\d{7,8}|N\d{5,7})/g, '');
+  // Bounded to 400 characters. The unbounded `[\s\S]*?` scanned to end-of-string
+  // for every occurrence whose lookahead never matched, which is quadratic in the
+  // occurrence count: 288 KB of repeated boilerplate measured at 15 seconds. The
+  // disclaimer is a known fixed paragraph well under 400 characters, so bounding
+  // it changes nothing real and removes the lever.
+  flatText = flatText.replace(/Bei Waren[\s\S]{0,400}?(?=\d{4}[A-Z]|\d{4} [A-Z]|ONS[A-Z]|\d{7,8}|N\d{5,7})/g, '');
   // Collapse multiple spaces after currency symbols so the split lookbehind (fixed-length)
   // can match "CHF " regardless of how many spaces the PDF layout left behind.
   flatText = flatText.replace(/(CHF|EUR|GBP|USD|CAD) {2,}/g, '$1 ');
@@ -457,23 +494,21 @@ function parseInvoiceText(text) {
     // block from picking up footer CHF amounts (Goods total, Subtotal, VAT, Total)
     // that appear between the last item and SUBTOTAL TARIFF NO.
     const afterTariffText = block.slice(tariffEnd);
-    // Same standalone-token guard as the tariff search: without it the "CAD" in
-    // a name like CADET could close a run and supply a phantom third amount.
-    const chfAfterTariff  = [...afterTariffText.matchAll(/([\d., ]+?)\s*(?<![A-Z])(?:CHF|EUR|GBP|USD|CAD)(?![A-Z])/g)];
+    const chfAfterTariff  = readAmountsBeforeCurrency(afterTariffText);
     if (chfAfterTariff.length < 3) {
       missedRows.push({ itemNo, reason: `${chfAfterTariff.length} CHF values after tariff`, context: block.slice(0, 200).replace(/\s+/g, " ") });
       continue;
     }
     const first3       = chfAfterTariff.slice(0, 3);
-    const combined     = first3[0][1].trim();
-    const lineDiscount = parseEuropeanNumber(first3[1][1].trim());
-    const lineTotal    = parseEuropeanNumber(first3[2][1].trim());
+    const combined     = first3[0].amount;
+    const lineDiscount = parseEuropeanNumber(first3[1].amount);
+    const lineTotal    = parseEuropeanNumber(first3[2].amount);
 
     // Embedded-item check: if the block tail (after item A's 3rd CHF value) contains
     // another tariff code, a second item is embedded. Split it off so the next loop
     // iteration processes it as its own block.
     const _tariffBase  = tariffEnd;
-    const _firstItemEnd = _tariffBase + first3[2].index + first3[2][0].length;
+    const _firstItemEnd = _tariffBase + first3[2].end;
     const _embTail     = block.slice(_firstItemEnd).trimStart();
     if (_embTail.length > 20 && /\d{10}/.test(_embTail)) {
       blocks.splice(_bi + 1, 0, _embTail);
@@ -1076,9 +1111,23 @@ async function handleConvert(req, res) {
 
   let pdfData;
   try {
-    pdfData = await pdfParse(pdfBuffer);
+    // Page cap: pdf-parse defaults to every page. A compressed content stream
+    // expands enormously, so an unbounded page count is a second way to spend
+    // the whole budget. The largest real invoice is 30 pages.
+    pdfData = await pdfParse(pdfBuffer, { max: 100 });
   } catch (e) {
     return res.status(422).json({ error: `PDF kon niet worden gelezen: ${e.message}` });
+  }
+
+  // Text cap before the regex pipeline. The largest real invoice extracts to
+  // 55 KB; nothing legitimate comes near this. Without it, whatever pdf-parse
+  // produced went straight into the parser however large.
+  const MAX_TEXT_CHARS = 2_000_000;
+  if ((pdfData.text || "").length > MAX_TEXT_CHARS) {
+    console.log(JSON.stringify({ event: "ci_text_too_large", chars: pdfData.text.length }));
+    return res.status(422).json({
+      error: "Deze PDF bevat ongewoon veel tekst en is niet als factuur te verwerken.",
+    });
   }
 
   const invoice = parseInvoiceText(pdfData.text);
