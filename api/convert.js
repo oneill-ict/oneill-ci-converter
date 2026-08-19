@@ -1,9 +1,8 @@
 ﻿import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
+import { extractLines, readItemRows } from "../lib/invoice-rows.mjs";
+import { readGoodsTotal, parseEuropeanNumber, round2 } from "../lib/invoice-footer.mjs";
 
 // There used to be `export const config = { api: { bodyParser: { sizeLimit:
 // "10mb" } } }` here. That is Next.js API-route syntax and this is a Vite SPA on
@@ -16,41 +15,8 @@ import { dirname, join } from "path";
 // anyone would assume from that deleted line. The guards that actually bind are
 // MAX_BASE64_CHARS and MAX_TEXT_CHARS below, both enforced in this file.
 
-// ── O'Neill item-number database ───────────────────────────────────────────
-// 15K+ item codes exported from ERP. Used as fallback when the regex patterns
-// don't cover a new item-number format (e.g. 6-digit codes, mixed alphanumeric).
-// Wrapped in try/catch: if the file can't be read the DB is simply empty and
-// the parser falls back to regex-only matching (same behaviour as before the DB).
-let ITEM_DB     = new Set();
-let ITEM_PREFIX = new Set();
-try {
-  const _dbPath    = join(dirname(fileURLToPath(import.meta.url)), "item-db.json");
-  const _itemDbArr = JSON.parse(readFileSync(_dbPath, "utf8"));
-  ITEM_DB = new Set(_itemDbArr);
-  for (const code of ITEM_DB) {
-    for (let i = 1; i <= code.length; i++) ITEM_PREFIX.add(code.slice(0, i));
-  }
-} catch (_e) {
-  console.error("[item-db] failed to load:", _e.message);
-}
-
 // ── PDF parser ─────────────────────────────────────────────────────────────
 
-function parseEuropeanNumber(s) {
-  if (!s) return 0;
-  // "1.234,56" → 1234.56
-  return parseFloat(s.replace(/\./g, "").replace(",", ".")) || 0;
-}
-
-function splitItemColour(combined) {
-  // Item name is ALL CAPS + digits/punctuation; colour starts with TitleCase.
-  // Split at first position where UPPERCASE/digit/punct transitions to TitleCase word.
-  const idx = combined.search(/(?<=[A-Z0-9\-'"&\s])(?=[A-Z][a-z])/);
-  if (idx > 0) return { item: combined.slice(0, idx).trim(), colour: combined.slice(idx).trim() };
-  return { item: combined.trim(), colour: "" };
-}
-
-const round2 = (n) => Math.round(n * 100) / 100;
 
 // parseInt/parseFloat return NaN on anything unparseable, and every fall-through
 // in the split functions ended in one. A NaN quantity reached ExcelJS, which
@@ -84,105 +50,6 @@ const CSV_UNSAFE_START = /^[=+\-@\t\r]/;
 const csvSafe = (v) =>
   (typeof v === "string" && CSV_UNSAFE_START.test(v)) ? "'" + v : v;
 
-// How far qty × price may legitimately sit from the stated line total.
-// The invoice prints the unit price to two decimals, but bills at more: a line
-// of 4 at a true 79,005 shows "79,01" and totals 316,02, while 4 × 79,01 gives
-// 316,04. The gap is the display rounding, at most half a cent per piece, so it
-// scales with quantity — a flat figure flagged correct lines from 4 pieces up
-// and would have let a real error hide from 5 pieces up. The epsilon absorbs
-// binary floating-point noise exactly at the boundary.
-const qtyTolerance = (qty) => Math.abs(qty) * 0.005 + 0.001;
-
-function parseQtyPrice(combined, totalCHF, discountCHF = 0) {
-  // combined = qty+price, possibly with spaces ("3 30,39") or thousands-sep periods ("11.200,00")
-  // Two discount formats exist across invoice types:
-  //   Format A (line discount):    total = qty × price - disc_total   → qty×price ≈ total+disc
-  //   Format B (per-unit discount): total = qty × (price - disc_unit) → total/qty ≈ price-disc
-  const s        = combined.trim();
-  const commaIdx = s.indexOf(",");
-  if (commaIdx < 0) return { qty: finiteOr0(parseInt(s, 10)), price: 0, discMult: 1 };
-  const intPart      = s.slice(0, commaIdx);
-  const decPart      = s.slice(commaIdx + 1).trim();
-  const expectedProd = round2(totalCHF + discountCHF);
-
-  // Pass 1 — line-discount format (standard CH invoices)
-  for (let qLen = 1; qLen < intPart.length; qLen++) {
-    const priceIntRaw = intPart.slice(qLen);
-    const priceInt = priceIntRaw.replace(/\./g, "").trim();
-    if (!priceInt || priceInt[0] === "0") continue;
-    const qty   = parseInt(intPart.slice(0, qLen), 10);
-    const price = parseFloat(`${priceInt}.${decPart}`);
-    if (isNaN(qty) || isNaN(price)) continue;
-    // Tolerance scales with this candidate's quantity: a flat 0.02 rejected the
-    // correct split on larger lines and could then accept a wrong one instead.
-    if (Math.abs(round2(qty * price) - expectedProd) <= qtyTolerance(qty)) return { qty, price, discMult: 1 };
-  }
-
-  // Pass 2 — per-unit discount format (e.g. Bens Surf Clinic / distributor invoices)
-  // Uses per-piece tolerance to absorb rounding in the per-unit discount value.
-  for (let qLen = 1; qLen < intPart.length; qLen++) {
-    const priceInt = intPart.slice(qLen).replace(/\./g, "").trim();
-    if (!priceInt || priceInt[0] === "0") continue;
-    const qty   = parseInt(intPart.slice(0, qLen), 10);
-    const price = parseFloat(`${priceInt}.${decPart}`);
-    if (isNaN(qty) || isNaN(price) || qty === 0) continue;
-    if (Math.abs(totalCHF / qty - (price - discountCHF)) < 0.02) return { qty, price, discMult: qty };
-  }
-
-  return { qty: finiteOr0(parseInt(intPart, 10)), price: finiteOr0(parseFloat(`0.${decPart}`)), discMult: 1 };
-}
-
-function bestQtyPrice(combined, totalCHF, discountCHF = 0) {
-  const s        = combined.trim();
-  const commaIdx = s.indexOf(",");
-  // No comma means there is nothing to split: the whole run is taken as the
-  // quantity and the price is forced to 0. That is the most degenerate result
-  // this function can produce, so it must report the worst possible diff —
-  // omitting it made the uncertainty comparison false and marked this
-  // exact case as certain.
-  if (commaIdx < 0) return { qty: finiteOr0(parseInt(s, 10)), price: 0, discMult: 1, diff: Infinity };
-  const intPart  = s.slice(0, commaIdx);
-  const decPart  = s.slice(commaIdx + 1).trim();
-  const target   = round2(totalCHF + discountCHF);
-  let bestDiff   = Infinity;
-  let best       = null;
-  for (let qLen = 1; qLen < intPart.length; qLen++) {
-    const priceIntRaw = intPart.slice(qLen);
-    const priceInt    = priceIntRaw.replace(/\./g, "").trim();
-    if (!priceInt || priceInt[0] === "0") continue;
-    const qty   = parseInt(intPart.slice(0, qLen), 10);
-    const price = parseFloat(`${priceInt}.${decPart}`);
-    if (isNaN(qty) || isNaN(price) || qty === 0) continue;
-    // Format A: line-discount diff
-    const diff1 = Math.abs(round2(qty * price) - target);
-    if (diff1 < bestDiff) { bestDiff = diff1; best = { qty, price, discMult: 1 }; }
-    // Format B: per-unit discount diff (scale to absolute amount for fair comparison)
-    const diff2 = Math.abs(totalCHF / qty - (price - discountCHF)) * qty;
-    if (diff2 < bestDiff) { bestDiff = diff2; best = { qty, price, discMult: qty }; }
-  }
-  // bestDiff is returned so callers can tell a reconciled split from a guess.
-  // Without it this function silently returned its closest attempt no matter how
-  // far off, and quantity is a customs-declared field.
-  if (best) return { ...best, diff: bestDiff };
-  return { qty: finiteOr0(parseInt(intPart, 10)), price: finiteOr0(parseFloat(`0.${decPart}`)), discMult: 1, diff: Infinity };
-}
-
-// A split is uncertain when it sits further from the line total than the price
-// display rounding can account for — see qtyTolerance.
-const isUncertainSplit = (guess) => guess.diff > qtyTolerance(guess.qty);
-
-function extractCountry(groupCountry) {
-  const trimmed = groupCountry.trim();
-  // Case 1: item group concatenated directly to country (e.g. "FootwearChina",
-  // "BlousesIndia") — split at lowercase→uppercase boundary.
-  const idx = trimmed.search(/(?<=[a-z])(?=[A-Z])/);
-  if (idx > 0) return trimmed.slice(idx).trim();
-  // Case 2: multi-word item group separated by spaces (e.g. "Dresses & Jumpsuits India",
-  // "Tops & Blouses Bangladesh") — country is always the last word.
-  const words = trimmed.split(/\s+/);
-  return words[words.length - 1] || trimmed;
-}
-
 // Reads the invoice grand total from the "Goods total" footer line.
 // Two layouts exist across templates:
 //   spaced:       "Goods total 226 8.429,10 CHF"  → 226 pieces, 8.429,10
@@ -193,137 +60,7 @@ function extractCountry(groupCountry) {
 // Subtotal + Discount — neither of which carries a quantity prefix — and the
 // quantity is whatever digits remain in front of it.
 // Returns { qty, total }; either field is null when it cannot be established.
-// A well-formed European amount: "0,00", "1.155,47", "500,00", "913304,16".
-// Rejects a spurious leading zero ("01.155,47"), which is what keeps the split
-// of a glued run unique.
-const AMOUNT_RE = /^(?:0|[1-9]\d{0,2}(?:\.\d{3})*|[1-9]\d*),\d{2}$/;
-
-// A negative amount anywhere in the footer means a credit note. Detected rather
-// than parsed: the per-line reader has no sign handling, so a credit note comes
-// out with every amount positive AND the qty/price run shifted by one character
-// — two lines of -17,39 became +34,78 in the workbook. Reading the footer
-// total as negative without fixing the lines made that worse, not better: the
-// invoice then failed validation and the auto-force downloaded the wrong file.
-// Refusing is the honest state until there is a real credit note to build on.
-const NEGATIVE_AMOUNT_RE = /-\d[\d.]*,\d{2}/;
-
-function readGoodsTotal(flatText) {
-  const CUR = /(?:CHF|EUR|GBP|USD|CAD)/.source;
-
-  // Stop before the tariff breakdown. Its column header reads "Tariff No.Subtotal"
-  // followed directly by a tariff number and amount, so a Subtotal search that ran
-  // past this point could read "Subtotal420292989089,10" and set the expected total
-  // to 420 billion — a guaranteed false mismatch on a perfectly parsed invoice.
-  const tariffTableAt = flatText.toLowerCase().indexOf("subtotal tariff no.");
-  let zone = tariffTableAt >= 0 ? flatText.slice(0, tariffTableAt) : flatText;
-  // If the tariff breakdown happens to precede the footer, cutting at it would
-  // leave no goods total at all. Fall back to the whole text rather than refuse.
-  if (!/Goods total/i.test(zone)) zone = flatText;
-
-  // One pass over both layouts, taking the LAST occurrence. Trying the spaced
-  // layout first across the whole document let a spaced per-page subtotal beat a
-  // glued grand total further down.
-  //   spaced: "Goods total226 8.429,10 CHF"   → two runs
-  //   glued:  "Goods total2913.304,16 EUR"    → one run
-  // Credit-note detection runs on the footer window BEFORE the pattern match,
-  // because on a glued credit note ("Goods total29-3.304,16") the pattern does
-  // not match at all — the run stops at the minus. Checking afterwards would
-  // silently miss exactly the shape that matters. See NEGATIVE_AMOUNT_RE.
-  let gtPos = -1;
-  for (const m of zone.matchAll(/Goods total/gi)) gtPos = m.index;
-  if (gtPos >= 0 && NEGATIVE_AMOUNT_RE.test(zone.slice(gtPos, gtPos + 300))) {
-    return { qty: null, total: null, creditNote: true };
-  }
-
-  let last = null;
-  // A minus is only ever a leading sign here, never mid-run. Allowing it anywhere
-  // inside the class turned a hyphenated token like "12-34" into a confident
-  // quantity of 12, and let parseInt produce NaN — which passes every
-  // `!== null` guard and then fails every equality check.
-  for (const m of zone.matchAll(new RegExp(`Goods total\\s*(-?[\\d.,]+)(?:\\s+(-?[\\d.,]+))?\\s*${CUR}`, "gi"))) last = m;
-  if (!last) return { qty: null, total: null };
-
-  if (last[2] !== undefined) {
-    const q = parseInt(last[1], 10);
-    // NaN would satisfy `!== null` and fail every comparison, producing a
-    // guaranteed mismatch reported as "expected: null".
-    if (!Number.isFinite(q)) return { qty: null, total: null };
-    return { qty: q, total: parseEuropeanNumber(last[2]) };
-  }
-
-  // Glued: pin the amount from the footer rows that follow. `\s*` after each
-  // label because templates that glue the goods-total run still space the rest
-  // ("Subtotal  12.750,23") — requiring a digit immediately after the label made
-  // this whole branch inert on exactly that combination.
-  const tail = zone.slice(last.index);
-  const subM = new RegExp(`Subtotal\\s*(-?[\\d.,]+)\\s*${CUR}`, "i").exec(tail);
-  if (!subM) return { qty: null, total: null };
-  // Only a Discount sitting between the goods total and the subtotal belongs to
-  // this footer. Scanning the whole tail also picked up an unrelated discount
-  // printed after "Total", inflating the target and forcing a false mismatch.
-  const discM = new RegExp(`Discount\\s*(-?[\\d.,]+)\\s*${CUR}`, "i").exec(tail.slice(0, subM.index));
-  const target = round2(parseEuropeanNumber(subM[1]) + (discM ? parseEuropeanNumber(discM[1]) : 0));
-
-  // Split the run so the amount equals the target.
-  const run = last[1];
-  for (let i = 1; i < run.length; i++) {
-    const qStr = run.slice(0, i), aStr = run.slice(i);
-    if (!/^\d+$/.test(qStr)) break;
-    if (!AMOUNT_RE.test(aStr)) continue;
-    if (Math.abs(parseEuropeanNumber(aStr) - target) < 0.005) {
-      return { qty: parseInt(qStr, 10), total: parseEuropeanNumber(aStr) };
-    }
-  }
-  // No split reproduces the target, so the target itself is not trustworthy
-  // either — refuse rather than report a figure nothing in the run confirms.
-  return { qty: null, total: null };
-}
-
-// Amounts printed immediately before a currency token, in order.
-//
-// Replaces a lazy `([\d., ]+?)\s*CUR` scan. Its two halves could both match a
-// space, so every way of splitting a whitespace run between them had to be
-// tried: the cost was cubic, ~5,000 consecutive spaces took over 30 seconds, and
-// a crafted PDF could burn the entire function budget on an unauthenticated
-// endpoint. Walking backwards from each currency token has no ambiguity to
-// explore. Measured on 6,000 spaces: 70,455 ms before, 0.2 ms after, with
-// identical output on every real invoice shape.
-//
-// Returns { amount, end } where `end` is the index just past the currency token —
-// the embedded-item check needs that position.
-const AMOUNT_CHARS = new Set([..."0123456789., "]);
-const MAX_AMOUNT_LEN = 64;   // no real amount field comes close; bounds the walk
-
-function readAmountsBeforeCurrency(text) {
-  const re  = /(?<![A-Z])(?:CHF|EUR|GBP|USD|CAD)(?![A-Z])/g;
-  const out = [];
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    // The old pattern allowed whitespace between the amount and the token.
-    let end = m.index;
-    while (end > 0 && /\s/.test(text[end - 1])) end--;
-    let start = end;
-    const floor = Math.max(0, end - MAX_AMOUNT_LEN);
-    while (start > floor && AMOUNT_CHARS.has(text[start - 1])) start--;
-    if (start === end) continue;                    // nothing numeric in front
-    out.push({ amount: text.slice(start, end).trim(), end: m.index + m[0].length });
-  }
-  return out;
-}
-
-// Returns the longest item code from ITEM_DB that starts at text[pos],
-// or null if nothing matches. minLen guards against 2-3 char false positives.
-function findDbItemAt(text, pos, minLen = 4) {
-  let last = null;
-  for (let end = pos + minLen; end <= Math.min(pos + 18, text.length); end++) {
-    const cand = text.slice(pos, end);
-    if (!ITEM_PREFIX.has(cand)) break;
-    if (ITEM_DB.has(cand)) last = cand;
-  }
-  return last;
-}
-
-function parseInvoiceText(text) {
+function parseInvoiceText(text, lines) {
   const invoice = {
     date: "", orderNumber: "", deliveryTerms: "", numberOfBoxes: "",
     grossWeight: "", billingName: "", billingAddress: [],
@@ -368,329 +105,101 @@ function parseInvoiceText(text) {
     /spedag|kaiseraugst/i.test(l)
   );
 
-  // ── Normalise text ────────────────────────────────────────────────────────
-  // Collapse newlines to spaces so multi-line PDF cells don't break the regex.
-  // Restrict to the items section to prevent false matches in the header block.
-  // Collapse newlines; then re-merge digit pairs that were split across lines
-  // e.g. PDF "2100\n049" → "2100 049" → "2100049" so item numbers stay intact.
-  let flatText = text.replace(/\n/g, " ");
-  flatText = flatText.replace(/(?<!\d)(\d{2,6}) (\d{1,6})(?!\d)/g, (m, a, b) => {
-    const combined = a + b;
-    return combined.length === 7 ? combined : m;
-  });
-  // Strip inter-page boilerplate (e.g. German origin disclaimer on CH invoices).
-  // This text appears between items on multi-page invoices and prevents the split
-  // regex from finding the correct boundary before the next item number.
-  // The lookahead must list every item-number format the splitter knows about.
-  // It lagged behind twice already: a wetsuit written "5551 Hyperfreak" or an
-  // ONS code sitting right after this boilerplate would not stop the deletion,
-  // so the item itself would be swallowed along with the disclaimer.
-  // Bounded to 400 characters. The unbounded `[\s\S]*?` scanned to end-of-string
-  // for every occurrence whose lookahead never matched, which is quadratic in the
-  // occurrence count: 288 KB of repeated boilerplate measured at 15 seconds. The
-  // disclaimer is a known fixed paragraph well under 400 characters, so bounding
-  // it changes nothing real and removes the lever.
-  flatText = flatText.replace(/Bei Waren[\s\S]{0,400}?(?=\d{4}[A-Z]|\d{4} [A-Z]|ONS[A-Z]|\d{7,8}|N\d{5,7})/g, '');
-  // Collapse multiple spaces after currency symbols so the split lookbehind (fixed-length)
-  // can match "CHF " regardless of how many spaces the PDF layout left behind.
-  flatText = flatText.replace(/(CHF|EUR|GBP|USD|CAD) {2,}/g, '$1 ');
-  const itemsStart = flatText.indexOf("DiscountTotal");
-
-  // Determine where the items section ends.
-  // Primary: "SUBTOTAL TARIFF NO." — the tariff breakdown header always follows
-  //   all items (including NOS items that appear after a per-page "Goods total"
-  //   subtotal). This is safer than stopping at "Goods total" which can appear
-  //   in the middle of the document as a running page subtotal.
-  // Fallback: last "goods total" occurrence — for invoices without tariff subtotals.
-  const flatLower  = flatText.toLowerCase();
-  let itemsEnd     = flatLower.indexOf("subtotal tariff no.");
-  if (itemsEnd < 0) itemsEnd = flatLower.lastIndexOf("goods total");
-  // Trim the grand-total footer, which sits between the last item and
-  // "SUBTOTAL TARIFF NO.". Its glued quantity+amount run ("12906134.293,59")
-  // matches the 8-digit item-number pattern, so the footer was split off as a
-  // phantom row — reported as an unreadable line and listed in the missing-items
-  // warning as item "12906134". Per-page "Goods total" subtotals can be followed
-  // by real NOS items, so only the last occurrence is cut.
-  // ...but only when that region really is just the footer. The note above says
-  // NOS items can follow a per-page "Goods total"; trimming blind would drop them
-  // AND blind the unparsed-item scan that runs over itemsText, so the loss would
-  // be silent. A tariff-length digit run in the cut means a real line is there.
-  const lastGoodsTotal = flatLower.lastIndexOf("goods total", itemsEnd < 0 ? undefined : itemsEnd);
-  if (lastGoodsTotal > itemsStart) {
-    const cut = flatText.slice(lastGoodsTotal, itemsEnd < 0 ? undefined : itemsEnd);
-    if (!/\d{10}/.test(cut)) itemsEnd = lastGoodsTotal;
-  }
-  const itemsText  = itemsStart >= 0 && itemsEnd > itemsStart
-    ? flatText.slice(itemsStart, itemsEnd)
-    : itemsStart >= 0 ? flatText.slice(itemsStart) : flatText;
-
-  // Detect invoice currency (CHF for Switzerland, EUR for other countries).
-  // Read from the items section, where the currency sits next to the amounts,
-  // rather than the first mention anywhere in the document — a header or a
-  // terms paragraph naming another currency would have set the whole export to it.
-  // Same alternation as every other currency-aware regex in this file — the two
-  // lists used to disagree, so a USD invoice read its grand total and then found
-  // zero items.
-  const currencyM = /\b(CHF|EUR|GBP|USD|CAD)\b/.exec(itemsText) || /\b(CHF|EUR|GBP|USD|CAD)\b/.exec(text);
-  invoice.currency = currencyM ? currencyM[1] : "CHF";
-
-  // Expected totals — read from the LAST "Goods total" line (the grand total).
-  // Scan the full flatText so intermediate per-page subtotals don't shadow it.
+  // ── Invoice footer ────────────────────────────────────────────────────────
+  // Flattening is still right for the footer: "Goods total 226 8.429,10 CHF" is a
+  // run of prose, not a table, and readGoodsTotal already handles both the spaced
+  // and the glued layout. Only the item table ever needed geometry.
+  const flatText = text.replace(/\n/g, " ");
   const { qty: expectedQty, total: expectedTotal, creditNote } = readGoodsTotal(flatText);
   invoice.creditNote = !!creditNote;
 
-  // ── STEP 1 — Split text into per-item blocks ─────────────────────────────
-  // Split on item-number boundaries.
-  // \d{7,8}: covers standard 7-digit items AND 8-digit items (e.g. 90261039).
-  // (?<![\dN]): prevents splitting at the digit portion of N-prefixed items
-  //   (e.g. N1800006 must not create a separate split at its embedded 1800006).
-  // N\d{5,7}: N-prefixed items (N+5 to N+7 digits).
-  // (?<=CHF/EUR/GBP )\d{4}[A-Z]: alphanumeric items (e.g. 4868G, 5045B) that appear
-  //   immediately after a CHF/EUR/GBP total line (collapsed newline becomes space).
-  const splitRe = /(?<![\dN])(?=\d{7,8}(?!\d))|(?<!\d)(?=N\d{5,7}(?!\d))|(?<=(?:CHF|EUR|GBP|USD|CAD) )(?=\d{4}[A-Z])|(?<=(?:CHF|EUR|GBP|USD|CAD) )(?=\d{4} [A-Z])|(?<=(?:CHF|EUR|GBP|USD|CAD) )(?=ONS[A-Z])/g;
-  const blocks  = itemsText.split(splitRe).filter(b => b.trim());
+  // ── Items ─────────────────────────────────────────────────────────────────
+  // Read from the PDF's own table geometry. Everything that used to live here —
+  // splitting the flattened text on item-number boundaries, hunting the tariff
+  // number, taking the first three currency amounts after it, guessing where the
+  // quantity ended and the price began, a repair pass over the guesses, and an
+  // item-number database to catch the codes the split regex could not — existed
+  // only because flattening glued neighbouring cells together. Each field now
+  // comes from its own column.
+  const { rows, columns, skipped, unplaced, currency, missingColumns } = readItemRows(lines);
 
-  // ── STEP 2 — Parse each block independently ───────────────────────────────
-  // blocks is a plain Array (from split), so splice() is safe during iteration.
-  const missedRows = [];
-  for (let _bi = 0; _bi < blocks.length; _bi++) {
-    const block = blocks[_bi];
-    // Item number: 7-8 digit, N+5..7 digit, or alphanumeric at block start (e.g. 4868G).
-    const itemNoM = /(?<![\dN])(\d{7,8})(?!\d)|(?<!\d)(N\d{5,7})(?!\d)|^(\d{4}[A-Z])|^(ONS[A-Z]+)|^(\d{4})(?= [A-Z])/.exec(block);
-    // If regex finds nothing, try the ERP item-number database as fallback.
-    // This covers formats not in the regex: 6-digit codes (006300), mixed alphanumeric
-    // (101230ON), long eyewear codes (10BRPK1005BLCK), etc.
-    let itemNo, itemNoEnd;
-    if (itemNoM) {
-      itemNo    = itemNoM[1] || itemNoM[2] || itemNoM[3] || itemNoM[4] || itemNoM[5];
-      itemNoEnd = itemNoM.index + itemNoM[0].length;
-    } else {
-      const trimmed = block.trimStart();
-      const leadWs  = block.length - trimmed.length;
-      const dbItem  = findDbItemAt(trimmed, 0);
-      const nextCh  = dbItem ? (trimmed[dbItem.length] || '') : '';
-      if (dbItem && /[A-Z0-9\-']/.test(nextCh)) {
-        itemNo    = dbItem;
-        itemNoEnd = leadWs + dbItem.length;
-      } else {
-        // The text before the first item (the column-header remnant) is not a
-        // row, and recording it produced a phantom "???" miss on every single
-        // invoice. That noise is why the UI filtered "???" out entirely — which
-        // in turn hid the real unrecognised lines. Only record a miss when the
-        // block actually looks like an invoice line: a tariff-length digit run
-        // and at least one currency amount.
-        const looksLikeRow = /\d{10}/.test(block) && /(?:CHF|EUR|GBP|USD|CAD)/.test(block);
-        if (looksLikeRow) {
-          missedRows.push({ itemNo: "???", reason: "no item number in block", context: block.slice(0, 150).replace(/\s+/g, " ") });
-        }
-        continue;
-      }
-    }
+  invoice.currency = currency
+    || (/\b(CHF|EUR|GBP|USD|CAD)\b/.exec(text) || [, "CHF"])[1];
 
-    // Tariff number (10 digits), normally followed immediately by the per-line
-    // gross weight, e.g. "6206300090240,00 gr" — no space in the PDF output.
-    // One template omits the per-line weight and states it only in the header;
-    // there the quantity follows the tariff directly ("62102000901113,04 EUR").
-    // Requiring the weight meant every line of that template was dropped and the
-    // invoice came back as "no items found". Both layouts are accepted now.
-    // Finding tariff FIRST so we can read CHF values after it, ignoring any footer
-    // amounts (Goods total, VAT, Total) that may appear later in the same block.
-    const tariffGrM = /(\d{10})(\d[\d.]*,\d+)\s*gr/.exec(block);
-    // null, not 0: this template states the weight only in the header, and a
-    // declared 0 kg reads as a fact rather than a gap. Lines that end up null
-    // are collected and reported instead of quietly shipping a zero.
-    let tariffNo, tariffPos, tariffEnd, grossWeight = null;
-    if (tariffGrM) {
-      tariffNo    = tariffGrM[1];
-      tariffPos   = tariffGrM.index;
-      tariffEnd   = tariffGrM.index + tariffGrM[0].length;
-      grossWeight = parseEuropeanNumber(tariffGrM[2]);
-    } else {
-      // Search past the item number so a long digit run in the code cannot match,
-      // and stop at the first currency word. Without that upper bound the scan
-      // could run into an embedded next item's tariff, making this line inherit
-      // that item's tariff, quantity, price and total while the item itself was
-      // still spliced in separately and counted twice.
-      const rest    = block.slice(itemNoEnd);
-      // Only a standalone currency token, not those letters inside a product
-      // name. A plain search would stop at the "CAD" in ARCADE or the "EUR" in
-      // EUROPA, cutting the search region short and dropping the line.
-      // Trailing guard is (?![A-Z]) rather than \b because the flattened text
-      // glues the next amount straight on: "113,04 EUR0,00 EUR".
-      const curIdx  = rest.search(/(?<![A-Z])(?:CHF|EUR|GBP|USD|CAD)(?![A-Z])/);
-      const bareM   = /(\d{10})(?=\d)/.exec(curIdx > 0 ? rest.slice(0, curIdx) : rest);
-      if (bareM) {
-        tariffNo  = bareM[1];
-        tariffPos = itemNoEnd + bareM.index;
-        tariffEnd = tariffPos + bareM[0].length;
-      }
-    }
-    if (!tariffNo) {
-      missedRows.push({ itemNo, reason: "no tariff number", context: block.slice(0, 200).replace(/\s+/g, " ") });
-      continue;
-    }
+  invoice.items = rows.map(r => ({
+    itemNo: r.itemNo, item: r.item, colour: r.colour, colourNo: r.colourNo,
+    country: r.country, tariffNo: r.tariffNo,
+    // null, not 0: gross weight is a customs-declared field, so an unknown has to
+    // stay visible rather than ship as a declared zero.
+    grossWeight: r.weight,
+    quantity: r.quantity, pricePerPiece: r.price,
+    discount: r.discount, total: r.total,
+  }));
 
-    // CHF values immediately after the tariff: combined (qty×price), discount, total.
-    // Using first-3-after-tariff instead of last-3-in-block prevents the last item's
-    // block from picking up footer CHF amounts (Goods total, Subtotal, VAT, Total)
-    // that appear between the last item and SUBTOTAL TARIFF NO.
-    const afterTariffText = block.slice(tariffEnd);
-    const chfAfterTariff  = readAmountsBeforeCurrency(afterTariffText);
-    if (chfAfterTariff.length < 3) {
-      missedRows.push({ itemNo, reason: `${chfAfterTariff.length} CHF values after tariff`, context: block.slice(0, 200).replace(/\s+/g, " ") });
-      continue;
-    }
-    const first3       = chfAfterTariff.slice(0, 3);
-    const combined     = first3[0].amount;
-    const lineDiscount = parseEuropeanNumber(first3[1].amount);
-    const lineTotal    = parseEuropeanNumber(first3[2].amount);
+  // ── Validate against the invoice's own footer ─────────────────────────────
+  const parsedQty   = invoice.items.reduce((s, i) => s + i.quantity, 0);
+  const parsedTotal = round2(invoice.items.reduce((s, i) => s + i.total, 0));
 
-    // Embedded-item check: if the block tail (after item A's 3rd CHF value) contains
-    // another tariff code, a second item is embedded. Split it off so the next loop
-    // iteration processes it as its own block.
-    const _tariffBase  = tariffEnd;
-    const _firstItemEnd = _tariffBase + first3[2].end;
-    const _embTail     = block.slice(_firstItemEnd).trimStart();
-    if (_embTail.length > 20 && /\d{10}/.test(_embTail)) {
-      blocks.splice(_bi + 1, 0, _embTail);
-    }
+  // The printed unit price is rounded to 2 decimals while the line total is
+  // computed from the unrounded one — 2 x 28,83 prints as 57,65, not 57,66 — so
+  // the footer can differ from the sum of the printed line totals by up to half a
+  // cent per affected line. The bound is derived from that count instead of picked,
+  // and stays far below the value of any real missing line. Compared in whole
+  // cents: at 0.03 against a 0.03 bound, binary floating point put the difference
+  // 2e-13 over and the check failed on noise rather than on money.
+  const roundedLines = invoice.items.filter(i =>
+    i.pricePerPiece != null &&
+    Math.abs(round2(i.quantity * i.pricePerPiece - i.discount) - i.total) > 0.001).length;
+  const cents = (n) => Math.round(n * 100);
 
-    // Text between itemNo and tariff number contains: item name, colour, colourNo, category/country
-    const midText = block.slice(itemNoEnd, tariffPos);
+  const totalOk = expectedTotal === null ||
+    Math.abs(cents(parsedTotal) - cents(expectedTotal)) <= roundedLines * 0.5 + 1;
+  const qtyOk   = expectedQty === null || parsedQty === expectedQty;
 
-    // Colour number: 4-5 digit standalone number preceded by a lowercase letter
-    // OR a single uppercase letter that itself follows a space (e.g. "Palms W 34041").
-    // This prevents numbers embedded in ALL-CAPS item names (e.g. "RIGINALS 1952")
-    // from matching because the uppercase S in RIGINALS is not preceded by a space.
-    const colourNoM = /(?<=[a-z]|(?<=\s)[A-Z]) *(\d{4,6})(?!\d)/.exec(midText);
-    const colourNo  = colourNoM ? colourNoM[1] : "";
-
-    // Country: text after colourNo and before tariff
-    const afterColourNo = colourNoM
-      ? midText.slice(colourNoM.index + colourNoM[0].length)
-      : midText;
-    const country = extractCountry(afterColourNo.trim());
-
-    // Item + colour name: text between itemNo and colourNo (or end of midText)
-    const namePart = colourNoM
-      ? midText.slice(0, colourNoM.index).trim()
-      : midText.trim();
-    const { item, colour } = splitItemColour(namePart);
-
-    // Qty + price — try exact split first, fall back to best-match.
-    // discMult=1 → line-discount format (discount stored as-is).
-    // discMult=qty → per-unit discount format (discount × qty = total line discount).
-    let { qty, price, discMult } = parseQtyPrice(combined, lineTotal, lineDiscount);
-    let qtyUncertain = false;
-    // The reconcile check has to allow the same display rounding the split does,
-    // or a perfectly good line is sent to the fallback and flagged there.
-    if (Math.abs(round2(qty * price - lineDiscount * discMult) - lineTotal) > qtyTolerance(qty)) {
-      const guess = bestQtyPrice(combined, lineTotal, lineDiscount);
-      ({ qty, price, discMult } = guess);
-      // No split of this run reconciles with the line total, so the quantity
-      // below is the closest attempt rather than a value the invoice supports.
-      qtyUncertain = isUncertainSplit(guess);
-    }
-    const storedDiscount = round2(lineDiscount * discMult);
-
-    invoice.items.push({
-      itemNo, item, colour, colourNo, country, tariffNo,
-      grossWeight,
-      quantity: qty, pricePerPiece: price, discount: storedDiscount, total: lineTotal,
-      _combined: combined, _origDiscount: lineDiscount, _qtyUncertain: qtyUncertain,
-    });
-  }
-
-  // ── STEP 2 — Validate ─────────────────────────────────────────────────────
-  let parsedQty   = invoice.items.reduce((s, i) => s + i.quantity, 0);
-  let parsedTotal = round2(invoice.items.reduce((s, i) => s + i.total, 0));
-  let totalOk = expectedTotal === null || Math.abs(parsedTotal - expectedTotal) < 0.10;
-  let qtyOk   = expectedQty  === null || parsedQty === expectedQty;
-
-  // ── STEP 3 — Repair if needed ─────────────────────────────────────────────
-  const repairs = [];
-  if (!totalOk || !qtyOk) {
-    for (const item of invoice.items) {
-      const computed = round2(item.quantity * item.pricePerPiece - item.discount);
-      if (Math.abs(computed - item.total) > qtyTolerance(item.quantity)) {
-        const fixed = bestQtyPrice(item._combined, item.total, item._origDiscount ?? item.discount);
-        repairs.push({
-          itemNo: item.itemNo, item: item.item, colour: item.colour,
-          combined: item._combined,
-          oldQty: item.quantity, oldPrice: item.pricePerPiece,
-          newQty: fixed.qty,    newPrice: fixed.price,
-          uncertain: isUncertainSplit(fixed),
-        });
-        item.quantity      = fixed.qty;
-        item.pricePerPiece = fixed.price;
-        item.discount      = round2((item._origDiscount ?? item.discount) * fixed.discMult);
-        item._qtyUncertain = isUncertainSplit(fixed);
-      }
-    }
-
-    // ── STEP 4 — Re-validate ─────────────────────────────────────────────
-    parsedQty   = invoice.items.reduce((s, i) => s + i.quantity, 0);
-    parsedTotal = round2(invoice.items.reduce((s, i) => s + i.total, 0));
-    totalOk = expectedTotal === null || Math.abs(parsedTotal - expectedTotal) < 0.10;
-    qtyOk   = expectedQty  === null || parsedQty === expectedQty;
-  }
-
-  // No separate "does the workbook agree with the invoice" check any more: the
-  // Total column now carries item.total itself, so the shipped sum IS parsedTotal
-  // and totalOk already covers it. The old check existed because the workbook
-  // recomputed the line from a rounded unit price and could drift a cent per
-  // line; carrying the invoice's figure removes the cause rather than watching
-  // for the symptom. A genuinely wrong qty/price split is still caught by the
-  // uncertain-quantity check, which has a tighter tolerance than that rounding.
-
-  // Lines with no per-line gross weight. Gross weight is a customs-declared
-  // field, so an unknown must be visible rather than shipped as 0.
+  // Lines with no per-line gross weight. One template states it only in the
+  // header, so an empty cell is a real case, not a parse failure — but it has to
+  // be reported rather than filled in.
   const noWeightLines = invoice.items
     .filter(i => i.grossWeight === null || i.grossWeight === undefined)
     .map(i => i.itemNo);
 
-  // Find item numbers present in itemsText but absent from parsed results — diagnostic.
-  // Groups: (1) 7-8 digit, (2) N-prefix, (3) 4digit+letter no-space, (4) 4digit space variant, (5) ONS-prefix
-  const parsedItemNos = new Set(invoice.items.map(i => i.itemNo));
-  const unparsedItemNos = [];
-  const _seenUnparsed = new Set();
-  const _scanRe = /(?<![\dN])(\d{7,8})(?!\d)|(?<!\d)(N\d{5,7})(?!\d)|(?<=(?:CHF|EUR|GBP|USD|CAD) )(\d{4}[A-Z])|(?<=(?:CHF|EUR|GBP|USD|CAD) )(\d{4})(?= [A-Z])|(?<=(?:CHF|EUR|GBP|USD|CAD) )(ONS[A-Z]+)/g;
-  for (const c of itemsText.matchAll(_scanRe)) {
-    const itemNum = c[1] || c[2] || c[3] || c[4] || c[5];
-    if (itemNum && !parsedItemNos.has(itemNum) && !_seenUnparsed.has(itemNum)) {
-      _seenUnparsed.add(itemNum);
-      const pos = c.index;
-      unparsedItemNos.push({
-        itemNo: itemNum,
-        context: itemsText.slice(Math.max(0, pos - 10), pos + 120).replace(/\s+/g, " "),
-      });
-    }
-  }
+  // Rows that sit in the item table but could not be read as a customs line. This
+  // is what the missing-articles warning now reports: the reader knows exactly
+  // which visual rows it declined and why. The old version scanned the flattened
+  // text for item numbers absent from the output, which could only ever guess.
+  const missedRows = skipped.map(s => ({
+    itemNo:  s.itemNo || "???",
+    reason:  s.reason,
+    context: s.text,
+  }));
 
   invoice._validation = {
-    valid: totalOk && qtyOk,
+    valid: totalOk && qtyOk && !missingColumns,
     noWeightLines,
     // `valid` alone is ambiguous: totalOk/qtyOk default to true when there is
     // nothing to compare against. `checked` says whether a comparison actually
-    // happened, so the UI can distinguish "verified" from "not verified".
-    // Per axis, because the two checks guard different failures: the total
-    // catches dropped or duplicated lines, the quantity catches a wrong
-    // qty/price split on a line whose total is right. `||` used to report
-    // "checked" when only the total axis had run, so the one check that can
-    // catch a bad split was silently skipped behind a green badge.
+    // happened, per axis, because the two guard different failures — the total
+    // catches dropped or duplicated lines, the quantity catches a wrong line.
     qtyChecked:   expectedQty   !== null,
     totalChecked: expectedTotal !== null,
     checked: expectedQty !== null && expectedTotal !== null,
     parsedQty, parsedTotal, expectedQty, expectedTotal,
-    totalOk, qtyOk, repairs, missedRows,
-    // Lines whose quantity/price split could not be reconciled with the line
-    // total. The line total itself is read straight from the PDF and is correct,
-    // so the invoice total still adds up — but the split is a guess, and the
-    // quantity is what gets declared to customs.
-    uncertainLines: invoice.items
-      .filter(i => i._qtyUncertain)
-      .map(i => ({ itemNo: i.itemNo, item: i.item, qty: i.quantity, price: i.pricePerPiece, total: i.total })),
-    unparsedItemNos: [...new Map(unparsedItemNos.map(x => [x.itemNo, x])).values()],
+    totalOk, qtyOk,
+    missedRows,
+    unparsedItemNos: [...new Map(missedRows.map(r => [r.itemNo, r])).values()],
+    // No quantity is guessed any more, so no line can carry an unreconciled
+    // split, and there is nothing for a repair pass to repair. Both stay as empty
+    // arrays while the frontend still reads them; removing those paths is the
+    // next change rather than this one.
+    uncertainLines: [],
+    repairs: [],
+    // Signs that the template moved: runs that fitted no column, and columns the
+    // reader could not name. Reported rather than absorbed — absorbing a stray run
+    // into its neighbour is what produced a wrong quantity on six invoices while
+    // every total still looked right.
+    unplacedRuns:   unplaced || 0,
+    missingColumns: missingColumns || null,
+    columnsFound:   columns.map(c => c.key).filter(Boolean),
   };
 
   // Invoice-level discount and VAT
@@ -1173,12 +682,20 @@ async function handleConvert(req, res) {
     return res.status(400).json({ error: "Ongeldige base64-data" });
   }
 
-  let pdfData;
+  let pdfData, lines;
   try {
     // Page cap: pdf-parse defaults to every page. A compressed content stream
     // expands enormously, so an unbounded page count is a second way to spend
     // the whole budget. The largest real invoice is 30 pages.
     pdfData = await pdfParse(pdfBuffer, { max: 100 });
+    // A second pass, for the positions this time. The invoice-level fields (date,
+    // order number, billing address) are still read from pdf-parse's own text
+    // layout: the billing block is two columns side by side at the same height, so
+    // rebuilding the text from positions interleaves the recipient with the
+    // shipper. Reading that block by column is a worthwhile change, but not this
+    // one. Two passes cost about a second on the largest real invoice, against a
+    // 30-second budget.
+    lines = await extractLines(pdfBuffer, pdfParse);
   } catch (e) {
     return res.status(422).json({ error: `PDF kon niet worden gelezen: ${e.message}` });
   }
@@ -1194,7 +711,7 @@ async function handleConvert(req, res) {
     });
   }
 
-  const invoice = parseInvoiceText(pdfData.text);
+  const invoice = parseInvoiceText(pdfData.text, lines);
 
   if (invoice.items.length === 0) {
     console.log(JSON.stringify({ event: "ci_no_items", file: logSafeName(filename), currency: invoice.currency }));

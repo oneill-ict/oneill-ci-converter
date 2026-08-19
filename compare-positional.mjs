@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { extractLines, readItemRows } from "./lib/invoice-rows.mjs";
-import { readGoodsTotal } from "./test-batch.mjs";
+import { readGoodsTotal } from "./lib/invoice-footer.mjs";
 
 const require  = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
