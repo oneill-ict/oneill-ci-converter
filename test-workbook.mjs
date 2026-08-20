@@ -57,7 +57,11 @@ async function cachedValues(buffer) {
   return { cells: out, xml };
 }
 
-for (const name of ["n-prefix-item-numbers", "per-piece-discounts", "weightless-template", "large-quantities"]) {
+// ch-b2c-172-rows is in this list for a specific reason: it has 30 tariff codes, enough
+// for the tariff block to reach down into the legal footer. Without it, a footer written
+// over the check rows passes every other fixture.
+for (const name of ["n-prefix-item-numbers", "per-piece-discounts", "weightless-template",
+                    "large-quantities", "ch-b2c-172-rows"]) {
   const { fixture, invoice } = invoiceFrom(name);
   const buffer = await buildExcel(invoice);
   const { cells, xml } = await cachedValues(buffer);
@@ -78,8 +82,15 @@ for (const name of ["n-prefix-item-numbers", "per-piece-discounts", "weightless-
 
   const label = (n) => String(ws.getRow(n).getCell(1).value ?? "");
   let diffRow = null;
-  for (let n = tariffHead; n < tariffHead + 60; n++) if (label(n) === "Difference") diffRow = n;
+  for (let n = tariffHead; n < tariffHead + 200; n++) if (label(n) === "Difference") diffRow = n;
   eq("er is een verschilrij", diffRow != null, true);
+
+  // All three check rows have to survive whatever is written below them. The legal footer
+  // used to start at a row derived from the tariff count and overwrote two of them on any
+  // invoice with enough codes to reach that far.
+  eq("de drie controlerijen staan er alle drie",
+     [label(diffRow - 2), label(diffRow - 1), label(diffRow)].join("|"),
+     "Tariff total|Invoice total|Difference");
 
   // The three cached zeros. A non-zero here means the breakdown does not account for
   // the whole invoice — the failure a misread tariff column would cause.
