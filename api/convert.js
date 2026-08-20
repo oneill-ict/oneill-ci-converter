@@ -566,6 +566,7 @@ export async function buildExcel(invoice) {
     C: invoice.items.length,
     D: invoice.items.reduce((s, i) => s + i.quantity, 0),
   };
+  const lastCheckRow = lastT + checkRows.length;
   checkRows.forEach(([label, formulaFor], n) => {
     const r    = lastT + 1 + n;
     const bold = { name: "Arial", size: 10, bold: n === 2 };
@@ -585,7 +586,13 @@ export async function buildExcel(invoice) {
   // ── Legal / customs footer ────────────────────────────────────────────────
   // Swiss-specific footer (Turkish origin + ZAZ + VAT/UID + optional B2B agent)
   // only applies to CHF invoices destined for Switzerland.
-  const footerStart = tariffSectionStart + uniqueTariffs.length + 3;
+  // Derived from the last row the tariff block actually wrote, not recomputed from the
+  // tariff count. It used to be tariffSectionStart + uniqueTariffs.length + 3, which was
+  // right until the block grew three check rows — and then the footer wrote straight over
+  // the "Invoice total" and "Difference" rows. Only on invoices with enough tariff codes
+  // to reach that far, so 40 of 42 looked fine and the two largest silently lost exactly
+  // the rows that were supposed to prove the workbook adds up.
+  const footerStart = lastCheckRow + 2;
   const isSwiss = (invoice.currency || "CHF") === "CHF";
 
   if (isSwiss) {
