@@ -2,6 +2,9 @@
 import { Upload, CheckCircle2, AlertCircle, Loader2, FileDown, Archive, AlertTriangle, Clock, Trash2 } from "lucide-react";
 import JSZip from "jszip";
 import { T } from "./lib/theme.js";
+import {
+  TRUST_ORDER, trustOf, rowAxis, rowTotal, exportNameFor, httpErrorMessage,
+} from "./lib/trust.js";
 
 // ── Translations ─────────────────────────────────────────────────────────────
 const i18n = {
@@ -257,17 +260,6 @@ const fmtCHF = (n) =>
 // before ours does, then stop waiting. Without an abort a stalled request held
 // the whole sequential batch open indefinitely with no way to cancel it.
 const REQUEST_TIMEOUT_MS = 40_000;
-
-// A platform-level failure (413, 504, a proxy page) has no JSON body, so the old
-// fallback surfaced the bare string "HTTP 504" to a logistics colleague. Each of
-// these says what happened and what to do about it.
-function httpErrorMessage(status, t) {
-  if (status === 413) return t.errTooLarge;
-  if (status === 504 || status === 502) return t.errTimeout;
-  if (status === 429) return t.errBusy;
-  if (status >= 500)  return t.errServer;
-  return t.errHttp(status);
-}
 
 async function convertFile(file, force = false, t) {
   const arrayBuffer = await file.arrayBuffer();
@@ -657,63 +649,6 @@ export default function App() {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-// ── One place decides whether an export can be trusted ──────────────────────
-// Six surfaces used to re-derive this independently — the badge, the batch row,
-// the ZIP suffix, the history writer, the download buttons and the warnings —
-// each looking at a different mix of isPartial / checked / qty / uncertainCount.
-// They disagreed: the same file could be amber in the badge, green in the
-// history and unlabelled in the ZIP. Everything now routes through here.
-const TRUST_ORDER = ["error", "partial", "unchecked", "noweight", "uncertain", "gaps", "degraded", "nodata"];
-
-function trustOf(r) {
-  if (!r)                     return { ok: false, kind: "error" };
-  if (r.error)                return { ok: false, kind: "error" };
-  if (r.isPartial)            return { ok: false, kind: "partial" };
-  if (r.checked === false)    return { ok: false, kind: "unchecked" };
- if (r.noWeightCount > 0)    return { ok: false, kind: "noweight" };
-  // Nothing sets uncertainCount any more — no quantity is guessed, so no line can
-  // carry an unreconciled split. The check stays for history entries written while
-  // it could: dropping it would quietly repaint a past amber run as green, and the
-  // export that run produced is still on someone's disk with its own marker.
-  if (r.uncertainCount > 0)   return { ok: false, kind: "uncertain" };
-  if (r.unparsedCount > 0)    return { ok: false, kind: "gaps" };
-  // Diagnostics unreadable: the absence of warnings proves nothing here.
-  if (r.degraded)             return { ok: false, kind: "degraded" };
-  // No quantity means the validation headers never arrived; the conversion
-  // cannot be vouched for even though the response was a 200.
-  if (!r.qty)                 return { ok: false, kind: "nodata" };
-  return { ok: true, kind: "ok" };
-}
-
-// Which validation axis actually failed, most specific first — shared by the
-// single view and the batch row so the two can never name different reasons.
-// The final fallback is only reachable if all three flags are missing (a stale
-// bundle against a newer server, say); "unknown" avoids asserting a reason.
-function rowAxis(r) {
-  if (r.qtyOk   === false) return "qty";
- if (r.totalOk === false) return "total";
-  return r.qtyOk === undefined && r.totalOk === undefined
-    ? "unknown" : "qty";
-}
-
-// The figure worth quoting is always the workbook's own sum — that is the number
-// in the file the user can open and check. Keying this off the axis meant the
-// parsed figure was quoted whenever the quantity ALSO failed, which is most of
-// the time, so the "12 cents out" case the axis fix was written for still
-// reported 2 cents. And on a total-only failure it quoted a figure that appears
-// in no delivered file at all.
-function rowTotal(r) {
-  return r.total;
-}
-
-function exportNameFor(r, t) {
-  const { ok, kind } = trustOf(r);
-  if (ok || kind === "error") return r.xlsxName;
-  const suffix = t.trustSuffix[kind];
-  if (!suffix) return r.xlsxName;
-  return r.xlsxName.replace(/\.xlsx$/i, "") + ` ${suffix}.xlsx`;
-}
 
 function triggerDownload(blob, name) {
   const url = URL.createObjectURL(blob);
