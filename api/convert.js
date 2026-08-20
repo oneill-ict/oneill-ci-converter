@@ -199,7 +199,10 @@ function col(n) {
   return String.fromCharCode(64 + n);
 }
 
-async function buildExcel(invoice) {
+// Exported so the workbook itself can be tested. It was the last layer with no
+// assertions at all: 350 lines deciding what a customs document says, verified only by
+// my opening one in Excel and looking at it.
+export async function buildExcel(invoice) {
   const wb = new ExcelJS.Workbook();
   wb.creator = "O'Neill CI Converter";
   const ws = wb.addWorksheet("Commercial Invoice");
@@ -466,14 +469,32 @@ async function buildExcel(invoice) {
   const tariffSectionStart = totRow + 3;
 
   setCell(tariffSectionStart, 1, "SUBTOTAL TARIFF NO.", { font: boldFont });
-  setCell(tariffSectionStart + 1, 1, "Tariff No.", {
-    font: { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } },
-    fill: tariffHdrFill, border: headerBorder,
-  });
-  setCell(tariffSectionStart + 1, 2, "Subtotal (CHF)", {
-    font: { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } },
-    fill: tariffHdrFill, border: headerBorder, alignment: { horizontal: "right" },
-  });
+
+  // Four columns, not one. The tariff subtotals decide the duty, and until now a reader
+  // could only see a code and an amount: checking whether the grouping was right meant
+  // filtering the item rows by hand and adding them up. Nothing in the converter
+  // validates the tariff column either — it is read from its own column and trusted,
+  // because the invoice footer only states a quantity and a total, not a breakdown.
+  //
+  // So the workbook now shows enough to check it at a glance: how many lines and how
+  // many pieces fall under each code, and a difference row that has to read zero. All
+  // of it as live Excel formulas, so a reader can follow any figure back to the rows it
+  // came from rather than taking a number this converter printed on faith.
+  //
+  // The amount stays in column B where it has always been, so anything downstream that
+  // reads this block by position keeps working.
+  const tariffHeaders = [
+    [1, "Tariff No.",           "left"],
+    [2, `Subtotal (${cur})`,    "right"],
+    [3, "Lines",                "right"],
+    [4, "Pieces",               "right"],
+  ];
+  for (const [col, label, align] of tariffHeaders) {
+    setCell(tariffSectionStart + 1, col, label, {
+      font: { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } },
+      fill: tariffHdrFill, border: headerBorder, alignment: { horizontal: align },
+    });
+  }
 
   const seen = new Set();
   const uniqueTariffs = [];
@@ -481,30 +502,84 @@ async function buildExcel(invoice) {
     if (!seen.has(item.tariffNo)) { seen.add(item.tariffNo); uniqueTariffs.push(item.tariffNo); }
   }
 
-  // Build tariff→total map for pre-calculated results
+  // Cached results, so the workbook is right on open without Excel recalculating.
   const tariffTotals = {};
+  const tariffLines  = {};
+  const tariffPieces = {};
   for (const item of invoice.items) {
     tariffTotals[item.tariffNo] = round2((tariffTotals[item.tariffNo] || 0) + item._total);
+    tariffLines[item.tariffNo]  = (tariffLines[item.tariffNo]  || 0) + 1;
+    tariffPieces[item.tariffNo] = (tariffPieces[item.tariffNo] || 0) + item.quantity;
   }
 
   const tariffCol = `$F$${DATA_START}:$F$${lastRow}`;
   const totalCol  = `$K$${DATA_START}:$K$${lastRow}`;
+  const qtyCol    = `$H$${DATA_START}:$H$${lastRow}`;
 
   uniqueTariffs.forEach((tariff, i) => {
     const r    = tariffSectionStart + 2 + i;
     const fill = i % 2 === 1 ? greyFill : null;
     setCell(r, 1, tariff, { font: boldFont, ...(fill ? { fill } : {}) });
-    const sc     = ws.getCell(r, 2);
-    // SUMPRODUCT rather than SUMIF: both the range and the criteria cell hold
-    // the tariff number as text, and SUMIF coerces a numeric-looking criteria to
-    // a number — the classic number-vs-text-in-range silent zero. The workbook
-    // opens correctly either way because the result is cached, so this only
-    // showed up once a user edited a cell and Excel recalculated.
-    sc.value     = { formula: `SUMPRODUCT(--(${tariffCol}=A${r}),${totalCol})`, result: tariffTotals[tariff] || 0 };
-    sc.numFmt    = "#,##0.00";
-    sc.font      = boldFont;
-    if (fill) sc.fill = fill;
-    sc.alignment = { horizontal: "right" };
+
+    // SUMPRODUCT rather than SUMIF/COUNTIF throughout: both the range and the criteria
+    // cell hold the tariff number as text, and SUMIF coerces a numeric-looking criteria
+    // to a number — the classic number-vs-text-in-range silent zero. The workbook opens
+    // correctly either way because the result is cached, so this only showed up once a
+    // user edited a cell and Excel recalculated.
+    const match = `--(${tariffCol}=A${r})`;
+    const cells = [
+      [2, `SUMPRODUCT(${match},${totalCol})`, tariffTotals[tariff] || 0, "#,##0.00"],
+      [3, `SUMPRODUCT(${match})`,             tariffLines[tariff]  || 0, "0"],
+      [4, `SUMPRODUCT(${match},${qtyCol})`,   tariffPieces[tariff] || 0, "0"],
+    ];
+    for (const [col, formula, result, numFmt] of cells) {
+      const c = ws.getCell(r, col);
+      c.value     = { formula, result };
+      c.numFmt    = numFmt;
+      c.font      = boldFont;
+      if (fill) c.fill = fill;
+      c.alignment = { horizontal: "right" };
+    }
+  });
+
+  // ── Does the breakdown account for the whole invoice? ──────────────────────
+  // Three rows: what the codes add up to, what the invoice says, and the difference.
+  // A non-zero difference means a line is counted twice or not at all — which is
+  // exactly the failure a misread tariff column would cause, and the only place in
+  // this workbook where it becomes visible.
+  const firstT = tariffSectionStart + 2;
+  const lastT  = tariffSectionStart + 1 + uniqueTariffs.length;
+  // gtRow, not lastRow + 2. Those are the same row and stay the same row — a discount
+  // shifts the rows below Goods total, not Goods total itself, so this is not a latent
+  // bug. It is a second copy of where that row lives, which is worth removing before it
+  // becomes one: the row has a name, so use the name.
+  const goodsRow = gtRow;
+  const checkRows = [
+    ["Tariff total", (col) => `SUM(${col}${firstT}:${col}${lastT})`],
+    ["Invoice total", (col) => col === "B" ? `K${goodsRow}`
+                            : col === "C" ? `SUMPRODUCT(--(${tariffCol}<>""))`
+                            : `H${goodsRow}`],
+    ["Difference",   (col) => `${col}${lastT + 1}-${col}${lastT + 2}`],
+  ];
+  const totalsByCol = {
+    B: round2(Object.values(tariffTotals).reduce((s, n) => s + n, 0)),
+    C: invoice.items.length,
+    D: invoice.items.reduce((s, i) => s + i.quantity, 0),
+  };
+  checkRows.forEach(([label, formulaFor], n) => {
+    const r    = lastT + 1 + n;
+    const bold = { name: "Arial", size: 10, bold: n === 2 };
+    setCell(r, 1, label, { font: bold });
+    for (const col of ["B", "C", "D"]) {
+      const c = ws.getCell(`${col}${r}`);
+      // Row 0 and row 1 are the same figure by construction, so the difference caches
+      // as 0. It is a formula, not a printed zero: the moment a cell is edited or a row
+      // deleted, Excel recomputes it and the zero stops being true.
+      c.value     = { formula: formulaFor(col), result: n === 2 ? 0 : totalsByCol[col] };
+      c.numFmt    = col === "B" ? "#,##0.00" : "0";
+      c.font      = bold;
+      c.alignment = { horizontal: "right" };
+    }
   });
 
   // ── Legal / customs footer ────────────────────────────────────────────────
