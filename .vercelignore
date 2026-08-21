@@ -30,3 +30,6 @@ compare-*.mjs
 make-fixtures.mjs
 run-tests.mjs
 test/
+_screens-bundle.mjs
+test-screens.mjs
+eslint.config.js

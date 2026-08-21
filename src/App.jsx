@@ -7,7 +7,11 @@ import {
 } from "./lib/trust.js";
 
 // ── Translations ─────────────────────────────────────────────────────────────
-const i18n = {
+// Exported so test-screens.mjs renders with the real strings. Its first version wrote out a
+// stub of this object and eight cases failed on keys it had not thought of (t.validRows,
+// t.filesOf) — a restated copy drifting from the original within the hour, which is the
+// mistake this repository has spent the day removing. Now a missing locale key fails a test.
+export const i18n = {
   NL: {
     title:         "Commercial Invoice Converter",
     dragHere:      "Loslaten om te uploaden",
@@ -24,7 +28,7 @@ const i18n = {
     validUnchecked:"Niet gecontroleerd — factuurtotaal niet gevonden",
     validQtyOnly:  "Alleen aantal gecontroleerd — bedrag niet leesbaar",
     validTotalOnly:"Alleen bedrag gecontroleerd — aantal niet leesbaar",
-    validRows:     (q, t) => `${q} stuks · CHF ${t}`,
+    validRows:     (q, t, cur) => `${q} stuks · ${cur} ${t}`,
     redownload:    "Opnieuw downloaden",
     newInvoice:    "Nieuwe factuur converteren",
     newInvoices:   "Nieuwe facturen",
@@ -41,10 +45,14 @@ const i18n = {
       ? "1 regel gevonden waarvan het artikelnummer niet leesbaar was — zie details."
       : `${n} regels gevonden waarvan het artikelnummer niet leesbaar was — zie details.`,
     missedDetailsLabel: "Reden per item",
+    // The keys the row reader emits. They used to be a different set entirely — left over
+    // from the old block splitter — so the lookup never matched and the raw string showed
+    // through. That was invisible while the reader happened to emit Dutch.
     missedReasons: {
-      "no tariff number":          "tariefnummer niet gevonden",
-      "no tariff+gr":              "tariefnummer niet gevonden",
-      "no item number in block":   "itemnummer niet herkend",
+      "no tariff number":   "tariefnummer niet gevonden",
+      "no quantity":        "aantal niet gevonden",
+      "no line total":      "regeltotaal niet gevonden",
+      "fractional quantity": "aantal is geen heel getal",
     },
     missedReasonDefault: (r) => r,
     downloadAnyway:"Download toch",
@@ -63,7 +71,7 @@ const i18n = {
     // quantity delta is reachable — "0 te veel" read as nonsense under a
     // heading about quantities not matching.
     shortBy:       (n) => n === 0 ? "aantal klopt" : n > 0 ? `${n} te weinig` : `${-n} te veel`,
-    amountOff:     (d) => `bedrag ${d > 0 ? "te laag" : "te hoog"}: CHF ${fmtCHF(Math.abs(d))}`,
+    amountOff:     (d, cur) => `bedrag ${d > 0 ? "te laag" : "te hoog"}: ${cur} ${fmtCHF(Math.abs(d))}`,
     forcedNote:    "Toch gedownload — dit bestand is niet goedgekeurd.",
     forceFailed:   (msg) => `Downloaden mislukt: ${msg}`,
     trustSuffix: {
@@ -138,7 +146,7 @@ const i18n = {
     validUnchecked:"Not verified — invoice total not found",
     validQtyOnly:  "Only the quantity was verified — amount unreadable",
     validTotalOnly:"Only the amount was verified — quantity unreadable",
-    validRows:     (q, t) => `${q} pieces · CHF ${t}`,
+    validRows:     (q, t, cur) => `${q} pieces · ${cur} ${t}`,
     redownload:    "Download again",
     newInvoice:    "Convert new invoice",
     newInvoices:   "New invoices",
@@ -156,9 +164,10 @@ const i18n = {
       : `${n} lines were found whose item numbers could not be read — see details.`,
     missedDetailsLabel: "Reason per item",
     missedReasons: {
-      "no tariff number":          "tariff number not found",
-      "no tariff+gr":              "tariff number not found",
-      "no item number in block":   "item number not recognised",
+      "no tariff number":   "tariff number not found",
+      "no quantity":        "quantity not found",
+      "no line total":      "line total not found",
+      "fractional quantity": "quantity is not a whole number",
     },
     missedReasonDefault: (r) => r,
     downloadAnyway:"Download anyway",
@@ -174,7 +183,7 @@ const i18n = {
     warnCount:     (n) => `${n} with warning`,
     downloadZip:   "Download all as ZIP",
     shortBy:       (n) => n === 0 ? "quantity matches" : n > 0 ? `${n} short` : `${-n} too many`,
-    amountOff:     (d) => `amount ${d > 0 ? "too low" : "too high"}: CHF ${fmtCHF(Math.abs(d))}`,
+    amountOff:     (d, cur) => `amount ${d > 0 ? "too low" : "too high"}: ${cur} ${fmtCHF(Math.abs(d))}`,
     forcedNote:    "Downloaded anyway — this file is not approved.",
     forceFailed:   (msg) => `Download failed: ${msg}`,
     trustSuffix: {
@@ -336,6 +345,9 @@ async function convertFile(file, force = false, t) {
     catch { degraded = true; return []; }
   };
   const preview          = parseHeader(res.headers.get("X-Preview"), true);
+  // The API sends this and the client used to ignore it, so every figure on screen read
+  // "CHF" — wrong on most invoices, since the corpus is largely EUR.
+  const currency         = res.headers.get("X-Currency") || "CHF";
   const unparsedItemNos  = parseHeader(res.headers.get("X-Unparsed-Items"), false);
   // The list is capped server-side; the count is the true total.
   const unparsedCount    = parseInt(res.headers.get("X-Unparsed-Count") || "0", 10) || unparsedItemNos.length;
@@ -352,7 +364,7 @@ async function convertFile(file, force = false, t) {
   if (!preview.length && qty > 0) degraded = true;
   const blob             = await res.blob();
   return { blob, qty, total, checked, qtyChecked, totalChecked, lineCount, preview, degraded,
-    unparsedItemNos, unparsedCount,
+    currency, unparsedItemNos, unparsedCount,
     noWeightItems, noWeightCount };
 }
 
@@ -450,7 +462,7 @@ export default function App() {
             unparsedCount: (e.unparsedItemNos || []).length,
             noWeightItems: e.noWeightLines || [],
             noWeightCount: (e.noWeightLines || []).length,
-            qtyOk: e.qtyOk, totalOk: e.totalOk, endTotalOk: e.endTotalOk,
+            qtyOk: e.qtyOk, totalOk: e.totalOk, endTotalOk: e.endTotalOk, currency: e.currency,
             preview: [], error: null, isPartial: true, file,
           };
           try {
@@ -485,7 +497,8 @@ export default function App() {
     // them with a green tick — with no `checked` field stored to correct it.
     const newEntries = batch
       .filter(r => trustOf(r).ok)
-      .map(r => ({ name: r.xlsxName, qty: r.qty, total: r.total, ts: Date.now(), v: HISTORY_VERSION }));
+      .map(r => ({ name: r.xlsxName, qty: r.qty, total: r.total, currency: r.currency,
+                   ts: Date.now(), v: HISTORY_VERSION }));
     if (newEntries.length) {
       setHistory(prev => {
         const updated = [...newEntries, ...prev].slice(0, MAX_HISTORY);
@@ -749,7 +762,7 @@ function UploadZone({ dragging, onPickFile, history, onClearHistory, t }) {
                 </div>
                 <div style={{ display: "flex", gap: "0.75rem", flexShrink: 0, marginLeft: "0.75rem" }}>
                   <span style={{ fontSize: "0.7rem", color: h.legacy ? T.textGhost : T.good }}>{h.qty} {t.rows}</span>
-                  <span style={{ fontSize: "0.7rem", color: T.textDim, fontFamily: "JetBrains Mono, monospace" }}>CHF {fmtCHF(h.total)}</span>
+                  <span style={{ fontSize: "0.7rem", color: T.textDim, fontFamily: "JetBrains Mono, monospace" }}>{h.currency || "CHF"} {fmtCHF(h.total)}</span>
                   <span style={{ fontSize: "0.68rem", color: T.textGhost }}>{timeAgo(h.ts, t)}</span>
                 </div>
               </div>
@@ -836,7 +849,7 @@ function PreviewTable({ rows, totalItems, t }) {
   );
 }
 
-function ValidationBadge({ qty, total, checked, qtyChecked, totalChecked, t }) {
+function ValidationBadge({ qty, total, currency, checked, qtyChecked, totalChecked, t }) {
   if (!qty) return null;
   // `checked` is now true only when BOTH axes ran. When exactly one ran, say
   // which — "passed" would claim a guarantee that covers only half the risk.
@@ -856,19 +869,21 @@ function ValidationBadge({ qty, total, checked, qtyChecked, totalChecked, t }) {
     }}>
       {isChecked ? <CheckCircle2 size={16} color={accent} /> : <AlertTriangle size={16} color={accent} />}
       <span style={{ fontSize: "0.82rem", color: T.text, fontWeight: 600 }}>
-        {t.validRows(qty, fmtCHF(total))}
+        {t.validRows(qty, fmtCHF(total), currency || "CHF")}
       </span>
       <span style={{ fontSize: "0.72rem", color: accent }}>{label}</span>
     </div>
   );
 }
 
-function humanReason(raw, t) {
+// The reader gives a stable key and, where a key cannot say it, a detail — the quantity
+// that was not a whole number, for instance. The regex that used to live here decoded
+// "N CHF values after tariff", a message the flattened-text parser produced and nothing
+// produces any more.
+function humanReason(raw, t, detail) {
   if (!raw) return "";
-  // "N CHF values after tariff" → readable
-  const chfM = /^(\d+) (?:CHF|EUR|GBP|currency) values? after tariff$/.exec(raw);
-  if (chfM) return `incomplete price data (${chfM[1]} value${chfM[1] === "1" ? "" : "s"} found, need 3)`;
-  return t.missedReasons[raw] || t.missedReasonDefault(raw);
+  const text = t.missedReasons[raw] || t.missedReasonDefault(raw);
+  return detail ? `${text} (${detail})` : text;
 }
 
 function PartialWarning({ result, onForceDownload, t }) {
@@ -911,7 +926,7 @@ function PartialWarning({ result, onForceDownload, t }) {
             <span style={{ color: "#f59e0b" }}>
               {result.expectedQty != null && t.shortBy(result.expectedQty - result.qty)}
               {result.expectedTotal != null && Math.abs(result.expectedTotal - shownTotal) >= 0.01 &&
-                `${result.expectedQty != null ? " · " : ""}${t.amountOff(result.expectedTotal - shownTotal)}`}
+                `${result.expectedQty != null ? " · " : ""}${t.amountOff(result.expectedTotal - shownTotal, result.currency || "CHF")}`}
             </span>
           </>
         )}
@@ -956,7 +971,7 @@ function PartialWarning({ result, onForceDownload, t }) {
                       {r.itemNo}
                     </td>
                     <td style={{ padding: "0.2rem 0", color: T.textDim }}>
-                      {humanReason(r.reason, t)}
+                      {humanReason(r.reason, t, r.detail)}
                       {/* For an unreadable line the item number tells the user nothing,
                           so show the raw text instead — that is what they search the PDF for. */}
                       {r.itemNo === "???" && r.context && (
@@ -1049,7 +1064,7 @@ function UncheckedWarning({ result, t }) {
 // SilentGapWarning still existed but nothing called them, so those warnings were invisible
 // even on the screens that did render. DegradedWarning was gone entirely while trustOf kept
 // marking files "degraded" — a filename marker with nothing on screen explaining it.
-function ResultWarnings({ result, t }) {
+export function ResultWarnings({ result, t }) {
   if (!result) return null;
   return (
     <>
@@ -1108,7 +1123,11 @@ function SilentGapWarning({ unparsedItemNos, count, t }) {
   );
 }
 
-function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) {
+// The result screens are exported for one reason: a change removed the warning wrapper and
+// left the call to it standing, and converting a single file threw ReferenceError and
+// blanked the page. Nothing in this file was rendered by any test, so nothing caught it.
+// test-screens.mjs renders each of these with realistic props. See that file.
+export function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) {
   const isError   = !!result.error;
   const isPartial = result.isPartial;
   // `isOk` used to mean "did not throw", which drew the green tick over results
@@ -1142,7 +1161,7 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
         {isOk && (
           <>
             <p style={{ fontWeight: 600, color: T.text, marginBottom: "0.75rem" }}>{t.downloadStart}</p>
-            <ValidationBadge qty={result.qty} total={result.total} checked={result.checked}
+            <ValidationBadge qty={result.qty} total={result.total} currency={result.currency} checked={result.checked}
               qtyChecked={result.qtyChecked} totalChecked={result.totalChecked} t={t} />
             <p style={{ fontSize: "0.73rem", color: T.textMute, fontFamily: "JetBrains Mono, monospace", marginBottom: "0.75rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {exportNameFor(result, t)}
@@ -1190,7 +1209,7 @@ function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) 
 }
 
 // Compact version of PartialWarning's item list, for a batch row.
-function BatchMissingItems({ result, t }) {
+export function BatchMissingItems({ result, t }) {
   const unparsed = result.unparsedItemNos || [];   // always strings; see convertFile
   const missed   = result.missedRows || [];
   const named    = unparsed.length > 0 ? unparsed : missed.filter(r => r.itemNo !== "???").map(r => r.itemNo);
@@ -1211,7 +1230,7 @@ function BatchMissingItems({ result, t }) {
   );
 }
 
-function BatchDoneState({ results, successCount, errorCount, partialCount, onDownloadZip, onDownloadSingle, onForceDownload, onReset, t }) {
+export function BatchDoneState({ results, successCount, errorCount, partialCount, onDownloadZip, onDownloadSingle, onForceDownload, onReset, t }) {
   const allOk = errorCount === 0 && partialCount === 0;
   return (
     <div style={{ padding: "0.5rem 0" }}>
@@ -1288,7 +1307,7 @@ function BatchDoneState({ results, successCount, errorCount, partialCount, onDow
                       {t.mismatchFound} {r.qty} / {r.expectedQty} {t.rows}
                       {r.expectedQty != null && ` (${t.shortBy(r.expectedQty - r.qty)})`}
                       {r.expectedTotal != null && Math.abs(r.expectedTotal - rowTotal(r)) >= 0.01 &&
-                        ` · ${t.amountOff(r.expectedTotal - rowTotal(r))}`}
+                        ` · ${t.amountOff(r.expectedTotal - rowTotal(r), r.currency || "CHF")}`}
                     </p>
                     {r.forcedAt && (
                       <p style={{ fontSize: "0.66rem", color: T.textMute, marginTop: "0.1rem", marginLeft: 17 }}>
@@ -1310,7 +1329,7 @@ function BatchDoneState({ results, successCount, errorCount, partialCount, onDow
                     fontSize: "0.7rem", marginTop: "0.2rem", marginLeft: 17,
                     color: ok ? T.good : "#f59e0b",
                   }}>
-                    {ok ? "✓" : "⚠"} {r.qty || 0} {t.rows} · CHF {fmtCHF(r.total)}
+                    {ok ? "✓" : "⚠"} {r.qty || 0} {t.rows} · {r.currency || "CHF"} {fmtCHF(r.total)}
                     {!ok && ` · ${t.trustReason[kind]}`}
                   </p>
                 )}

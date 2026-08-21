@@ -165,6 +165,7 @@ function parseInvoice(lines) {
   const missedRows = skipped.map(s => ({
     itemNo:  s.itemNo || "???",
     reason:  s.reason,
+    detail:  s.detail ?? null,
     context: s.text,
   }));
 
@@ -846,7 +847,7 @@ async function handleConvert(req, res) {
     expectedTotal:  v?.expectedTotal ?? null,
     valid:          v?.valid         ?? null,
     missedCount:    (v?.missedRows || []).length,
-    missed:         (v?.missedRows || []).map(r => ({ itemNo: r.itemNo, reason: r.reason })).slice(0, 10),
+    missed:         (v?.missedRows || []).map(r => ({ itemNo: r.itemNo, reason: r.reason, detail: r.detail })).slice(0, 10),
     unparsedCount:  (v?.unparsedItemNos || []).length,
     unparsed:       (v?.unparsedItemNos || []).map(r => r.itemNo),
   }));
