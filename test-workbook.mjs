@@ -21,7 +21,6 @@ const eq = (label, got, want) => {
   console.log(`    ${ok ? "ok  " : "FAIL"} ${label}${ok ? "" : `   got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`}`);
   ok ? pass++ : fail++;
 };
-const round2 = (n) => Math.round(n * 100) / 100;
 
 function invoiceFrom(fixtureName, extra = {}) {
   const fx = JSON.parse(fs.readFileSync(`test/fixtures/${fixtureName}.json`, "utf8"));

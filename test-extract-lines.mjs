@@ -26,7 +26,6 @@ const eq = (label, got, want) => {
 };
 
 const lines = groupIntoLines(fx.runs);
-const textOf = (l) => l.runs.map(r => r.text).join(" ");
 const lineWith = (needle) => lines.filter(l => l.runs.some(r => r.text.trim() === needle));
 
 console.log("\n  wat er in gaat en uit komt");

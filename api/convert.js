@@ -200,11 +200,6 @@ function parseInvoice(lines) {
 
 // ── Excel builder ──────────────────────────────────────────────────────────
 
-function col(n) {
-  // 1=A, 2=B, ...
-  return String.fromCharCode(64 + n);
-}
-
 // Exported so the workbook itself can be tested. It was the last layer with no
 // assertions at all: 350 lines deciding what a customs document says, verified only by
 // my opening one in Excel and looking at it.
