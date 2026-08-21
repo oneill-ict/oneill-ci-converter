@@ -730,6 +730,7 @@ export default async function handler(req, res) {
     // Clear any length staged for the xlsx body we are no longer sending.
     try { res.removeHeader("Content-Length"); } catch {}
     return res.status(500).json({
+      kind: "crash",
       error: `Onverwachte fout bij het verwerken: ${e?.message || "onbekende fout"}`,
     });
   }
@@ -796,7 +797,7 @@ async function handleConvert(req, res) {
     // way to spend the whole budget. The largest real invoice is 30 pages.
     lines = await extractLines(pdfBuffer, pdfParse);
   } catch (e) {
-    return res.status(422).json({ error: `PDF kon niet worden gelezen: ${e.message}` });
+    return res.status(422).json({ kind: "unreadable", error: `PDF kon niet worden gelezen: ${e.message}` });
   }
 
   // Size cap, measured on what the parser actually consumes rather than on a text
@@ -808,6 +809,7 @@ async function handleConvert(req, res) {
   if (textChars > MAX_TEXT_CHARS) {
     console.log(JSON.stringify({ event: "ci_text_too_large", chars: textChars }));
     return res.status(422).json({
+      kind: "too-much-text",
       error: "Deze PDF bevat ongewoon veel tekst en is niet als factuur te verwerken.",
     });
   }
@@ -817,6 +819,7 @@ async function handleConvert(req, res) {
   if (invoice.items.length === 0) {
     console.log(JSON.stringify({ event: "ci_no_items", file: logSafeName(filename), currency: invoice.currency }));
     return res.status(422).json({
+      kind: "no-items",
       error: "Geen factuurregels gevonden. Controleer of dit een O'Neill Commercial Invoice is.",
     });
   }
@@ -828,6 +831,7 @@ async function handleConvert(req, res) {
   if (invoice.creditNote) {
     console.log(JSON.stringify({ event: "ci_credit_note", file: logSafeName(filename) }));
     return res.status(422).json({
+      kind: "credit-note",
       error: "Dit lijkt een creditnota (negatieve bedragen). Die worden nog niet ondersteund — de bedragen zouden zonder minteken in het Excel komen. Maak deze handmatig op.",
     });
   }
@@ -856,6 +860,8 @@ async function handleConvert(req, res) {
   // When force=true the client explicitly wants the Excel anyway (e.g. after warning).
   if (v && !v.valid && !force) {
     return res.status(422).json({
+      kind:             v.missingColumns ? "unknown-template" : "validation",
+      missingColumns:   v.missingColumns ?? null,
       error:            "Validatie mislukt na herstel",
       parsedQty:        v.parsedQty,
       expectedQty:      v.expectedQty,
@@ -882,7 +888,7 @@ async function handleConvert(req, res) {
   try {
     xlsxBuffer = await buildExcel(invoice);
   } catch (e) {
-    return res.status(500).json({ error: `Excel kon niet worden aangemaakt: ${e.message}` });
+    return res.status(500).json({ kind: "excel-failed", error: `Excel kon niet worden aangemaakt: ${e.message}` });
   }
 
   // Use the original PDF filename (without extension) if provided, else fall back to order/date

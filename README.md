@@ -93,6 +93,41 @@ Daarna zelf controleren met een echte factuur, niet alleen aannemen dat het goed
 
 ---
 
+## Automatische foutmeldingen
+
+Als een conversie mislukt op een manier die de converter zelf betreft, gaat er een bericht
+naar `sjoerd.lier@oneill.com` en krijgt de gebruiker te zien dat het al gemeld is. Die hoeft
+dan niets door te sturen.
+
+**Wat wél gemeld wordt:** een validatie die niet klopt, regels die niet gelezen konden
+worden, een sjabloon dat hij niet begrijpt, of een crash.
+
+**Wat niet:** een packing list, een creditnota, een te groot bestand of een onleesbare PDF.
+Dat is normaal gebruik, daar kan de gebruiker zelf mee verder, en een postbus vol
+daarvan leert je de melding te negeren die wél telt.
+
+Eén bericht per batch, niet per bestand. Twintig mislukte bestanden is dus één bericht met
+twintig regels — en dat is ook de enige manier om te zien of het één probleem is of twintig.
+
+### Opzetten
+
+Er is een Resend-sleutel nodig. Zonder sleutel blijft alles werken: de melding wordt dan
+alleen in de Vercel-logs gezet en de gebruiker krijgt te zien dat het **niet** gemeld kon
+worden — nooit een geruststelling die niet waar is.
+
+1. Voorwaarden accepteren: https://vercel.com/oneill-ict/~/integrations/accept-terms/resend
+2. `vercel integration add resend/resend-email`
+3. `vercel env ls` — er moet een `RESEND_API_KEY` staan
+4. Opnieuw deployen
+
+De afzender is standaard `onboarding@resend.dev`. Die van Resend werkt zonder
+domeinverificatie, maar mag alleen naar het adres van de accounteigenaar mailen — dat is
+precies het adres hierboven. Wil je vanaf `@oneill.com` versturen, dan moet IT een
+DNS-record zetten; daarna is het `vercel env add REPORT_FROM`.
+
+Het bericht bevat bestandsnamen, aantallen, artikelnummers en de reden. **Niet** de PDF of
+de werkmap.
+
 ## De snelheidsbegrenzing
 
 Actief sinds 21 augustus 2026. `/api/convert` is een open endpoint zonder login, dus het
