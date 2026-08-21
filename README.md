@@ -93,35 +93,41 @@ Daarna zelf controleren met een echte factuur, niet alleen aannemen dat het goed
 
 ---
 
-## Nog niet geregeld
+## De snelheidsbegrenzing
 
-**Er zit nog geen snelheidsbegrenzing op `/api/convert`.** Het is een open endpoint
-zonder login, en elke aanroep kost rekentijd. DDoS-mitigatie staat overigens standaard
-aan bij Vercel, op elk plan, en verkeer dat de firewall blokkeert wordt niet gefactureerd
-— het gat is dus kleiner dan het klinkt, maar het is er.
+Actief sinds 21 augustus 2026. `/api/convert` is een open endpoint zonder login, dus het
+aantal aanroepen is begrensd:
 
-De regel staat al **als concept** klaar (via `vercel firewall rules add`). Bekijken en
-activeren:
-
-```bash
-vercel firewall diff
-vercel firewall publish
+```
+Rate limit /api/convert  —  path starts with /api/convert
+120 verzoeken / 60 s, per IP  —  bij overschrijding: log
 ```
 
-Weghalen kan met `vercel firewall discard`.
-
-Hij staat op `log`, niet op blokkeren: 120 verzoeken per 60 seconden per IP, en bij
-overschrijding alleen registreren. Zo zie je eerst of er ooit iemand in de buurt komt
-voor je legitiem verkeer riskeert. Dichtdraaien is later één wijziging:
+**Hij blokkeert nog niets.** `log` betekent alleen registreren, zodat je eerst een tijdje
+kunt zien of er ooit iemand in de buurt komt voordat je legitiem verkeer riskeert.
+Dichtdraaien is later één commando:
 
 ```bash
 vercel firewall rules edit "Rate limit /api/convert" --rate-limit-action deny --yes
+vercel firewall publish
+```
+
+Bekijken wat er live staat, of iets terugdraaien:
+
+```bash
+vercel firewall rules list --expand
+vercel firewall diff        # openstaande concepten
+vercel firewall discard     # concepten weggooien
 ```
 
 Twee dingen om te weten bij het kiezen van dat getal. **De teller loopt per IP**, en zit
-het kantoor achter één uitgaand IP dan geldt de limiet voor iedereen samen — daarom 120
-en niet 60. En **de tellers zijn per regio**, dus het feitelijke totaal kan een veelvoud
-zijn. Het is een bovengrens tegen misbruik, geen precieze meter.
+het kantoor achter één uitgaand IP dan geldt de limiet voor iedereen samen — daarom 120 en
+niet 60. En **de tellers zijn per regio**, dus het feitelijke totaal kan een veelvoud zijn.
+Het is een bovengrens tegen misbruik, geen precieze meter. Een normale batch van tien
+facturen achter elkaar is gemeten en gaat er ruim onderdoor.
+
+Verkeer dat de firewall blokkeert wordt niet gefactureerd, en DDoS-mitigatie staat bij
+Vercel standaard aan op elk plan.
 
 ## Waar de rest staat
 
