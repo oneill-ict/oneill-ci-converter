@@ -928,6 +928,11 @@ async function handleConvert(req, res) {
   // Number of invoice LINES, as distinct from the piece count above. The UI used
   // the piece count to label rows, producing "+213 more rows" on a 40-line invoice.
   res.setHeader("X-Line-Count",                String(invoice.items.length));
+  // The currency of the amounts in the workbook. The client shows it next to every figure;
+  // without it every screen reads "CHF", which is wrong on most invoices — the corpus is
+  // largely EUR. It was listed in Access-Control-Expose-Headers before it was ever sent,
+  // and I took my own grep of that list as evidence the header existed.
+  res.setHeader("X-Currency",                  invoice.currency || "CHF");
   res.setHeader("X-Validation-Expected-Qty",   String(v?.expectedQty   ?? ""));
   res.setHeader("X-Validation-Expected-Total", String(v?.expectedTotal ?? ""));
   // Expose unparsed item numbers even on success so the frontend can show a soft
