@@ -135,5 +135,21 @@ eq("503", httpErrorMessage(503, t), "serverfout");
 eq("400 valt terug op de code", httpErrorMessage(400, t), "HTTP 400");
 eq("418 valt terug op de code", httpErrorMessage(418, t), "HTTP 418");
 
-console.log(`\n${pass} geslaagd, ${fail} gefaald`);
+
+console.log("\n  de derde as: het eindtotaal");
+{
+  // Added because nothing compared the workbook's end total with the printed one, which is
+  // how fifteen invoice discounts and two shipping-cost lines vanished behind a green check.
+  eq("eindtotaal fout", rowAxis({ qtyOk: true, totalOk: true, endTotalOk: false }), "endTotal");
+  // Ordered last: the other two point at a specific line, this one says a component of the
+  // summary block was misread.
+  eq("aantal gaat voor eindtotaal", rowAxis({ qtyOk: false, totalOk: true, endTotalOk: false }), "qty");
+  eq("totaal gaat voor eindtotaal", rowAxis({ qtyOk: true, totalOk: false, endTotalOk: false }), "total");
+  eq("alles goed blijft qty", rowAxis({ qtyOk: true, totalOk: true, endTotalOk: true }), "qty");
+  // A bundle that predates the flag must not read a missing field as a failure.
+  eq("veld afwezig is geen fout", rowAxis({ qtyOk: true, totalOk: true }), "qty");
+}
+
+console.log(`
+${pass} geslaagd, ${fail} gefaald`);
 process.exit(fail ? 1 : 0);

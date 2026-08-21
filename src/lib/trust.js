@@ -50,6 +50,12 @@ export function trustOf(r) {
 export function rowAxis(r) {
   if (r.qtyOk   === false) return "qty";
   if (r.totalOk === false) return "total";
+  // The end total: goods total minus discount plus shipping costs plus VAT, against what
+  // the invoice prints at the bottom. Last of the three because the other two point at a
+  // specific line, while this one says a component of the summary block was misread. It is
+  // the axis that was missing when fifteen invoice discounts and two shipping-cost lines
+  // disappeared from delivered workbooks with a green check on them.
+  if (r.endTotalOk === false) return "endTotal";
   return r.qtyOk === undefined && r.totalOk === undefined ? "unknown" : "qty";
 }
 
