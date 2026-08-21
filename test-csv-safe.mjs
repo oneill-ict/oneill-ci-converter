@@ -7,9 +7,10 @@
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 
-// Mirrors the guard in api/convert.js.
-const CSV_UNSAFE_START = /^[=+\-@\t\r]/;
-const csvSafe = (v) => (typeof v === "string" && CSV_UNSAFE_START.test(v)) ? "'" + v : v;
+// The real guard, not a copy of it. This file used to restate it under a comment saying
+// it mirrored api/convert.js — and a restatement can go green while the shipped code is
+// broken, which is the failure this repository has already been bitten by twice.
+import { csvSafe } from "./api/convert.js";
 
 let fail = 0;
 const check = (ok, msg) => { if (!ok) fail++; console.log(`  ${ok ? "ok  " : "FAIL"}  ${msg}`); };

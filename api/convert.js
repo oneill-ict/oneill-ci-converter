@@ -27,7 +27,44 @@ import { findCity } from "../lib/invoice-address.mjs";
 // the response was a 200 OK with an unopenable attachment. The quantity-splitting
 // fall-throughs that produced those NaNs are gone, but the cells still pass through
 // here: a guard at the point of writing outlives whatever fed it.
-const finiteOr0 = (n) => (Number.isFinite(n) ? n : 0);
+export const finiteOr0 = (n) => (Number.isFinite(n) ? n : 0);
+
+// What a parsed value becomes in a spreadsheet cell. Two last lines of defence, both for
+// values that came out of the PDF: ExcelJS writes a non-finite number verbatim as
+// <v>NaN</v>, which is not valid SpreadsheetML and makes Excel offer to repair the file;
+// and text starting with = + - @ becomes a formula if the sheet is exported to CSV.
+//
+// Exported for the same reason as checkPdfInput: its test used to keep a copy.
+export const cellValue = (value) =>
+  (typeof value === "number" && !Number.isFinite(value)) ? "" : csvSafe(value);
+
+// Whether a request body's `pdf` field can be decoded at all.
+//
+// Exported so the tests can call the real thing. They used to hold their own copy of this
+// rule, which can go green while the shipped guard is broken — the failure mode this
+// repository has already been bitten by twice.
+//
+// Buffer.from accepts anything array-like and then IGNORES the "base64" argument, so
+// `{"pdf":{"length":200000000}}` — a 28-byte request — allocated 191 MB and spent 9
+// seconds zero-filling it. Scale the number up and it is either the whole CPU budget or an
+// out-of-memory kill, from a body small enough that no request-size limit can see it.
+//
+// Base64 inflates by ~4/3, so MAX_BASE64_CHARS bounds the decoded PDF to ~5 MB — above the
+// platform's own request cap, so it can never be the binding limit for a legitimate file,
+// but it stops an oversized string reaching the decoder.
+export const MAX_BASE64_CHARS = 7_000_000;
+
+export function checkPdfInput(pdf) {
+  if (!pdf) return { status: 400, error: "Geen PDF ontvangen" };
+  if (typeof pdf !== "string") return { status: 400, error: "Ongeldige PDF-data" };
+  if (pdf.length > MAX_BASE64_CHARS) {
+    return {
+      status: 413,
+      error: "Deze PDF is te groot om te verwerken. Splits de factuur of maak hem handmatig op.",
+    };
+  }
+  return { status: 200 };
+}
 
 // Filenames come off the user's disk and in practice carry customer names
 // ("CI CH B2B", "Test PDF CH met AT klanten"). The logs are for spotting
@@ -49,8 +86,8 @@ function logSafeName(name) {
 // A leading apostrophe forces text and is invisible in the cell.
 // Item names, colours and country names all come from the PDF, so this is the
 // one place parsed text could turn into something executable.
-const CSV_UNSAFE_START = /^[=+\-@\t\r]/;
-const csvSafe = (v) =>
+export const CSV_UNSAFE_START = /^[=+\-@\t\r]/;
+export const csvSafe = (v) =>
   (typeof v === "string" && CSV_UNSAFE_START.test(v)) ? "'" + v : v;
 
 function parseInvoice(lines) {
@@ -338,13 +375,7 @@ export async function buildExcel(invoice) {
 
     const cd = (colNum, value, extra = {}) => {
       const cell = ws.getCell(r, colNum);
-      // Two last lines of defence, both for values that came out of the PDF:
-      // ExcelJS writes a non-finite number verbatim as <v>NaN</v>, which is not
-      // valid SpreadsheetML and makes Excel offer to repair the file; and text
-      // starting with = + - @ becomes a formula if the sheet is exported to CSV.
-      cell.value = (typeof value === "number" && !Number.isFinite(value))
-        ? ""
-        : csvSafe(value);
+      cell.value = cellValue(value);
       cell.font  = hFont;
       if (altFill) cell.fill = altFill;
       cell.border = bdr;
@@ -687,25 +718,8 @@ async function handleConvert(req, res) {
   }
 
   const { pdf, filename, force } = req.body || {};
-  if (!pdf) return res.status(400).json({ error: "Geen PDF ontvangen" });
-
-  // Buffer.from accepts anything array-like and then IGNORES the "base64"
-  // argument, so `{"pdf":{"length":200000000}}` — a 28-byte request — allocated
-  // 191 MB and spent 9 seconds zero-filling it. Scale the number up and it is
-  // either the whole CPU budget or an out-of-memory kill, from a body small
-  // enough that no request-size limit can see it.
-  if (typeof pdf !== "string") {
-    return res.status(400).json({ error: "Ongeldige PDF-data" });
-  }
-  // Base64 inflates by ~4/3, so this bounds the decoded PDF to ~5 MB — above the
-  // platform's own request cap, so it can never be the binding limit for a
-  // legitimate file, but it stops an oversized string reaching the decoder.
-  const MAX_BASE64_CHARS = 7_000_000;
-  if (pdf.length > MAX_BASE64_CHARS) {
-    return res.status(413).json({
-      error: "Deze PDF is te groot om te verwerken. Splits de factuur of maak hem handmatig op.",
-    });
-  }
+  const input = checkPdfInput(pdf);
+  if (input.status !== 200) return res.status(input.status).json({ error: input.error });
 
   let pdfBuffer;
   try {

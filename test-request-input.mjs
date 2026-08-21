@@ -3,15 +3,11 @@
 // could name a 191 MB allocation. These are the shapes that must be refused
 // before the decoder sees them.
 // Run: node test-request-input.mjs
-const MAX_BASE64_CHARS = 7_000_000;
-
-// Mirrors the guard in api/convert.js.
-function guard(pdf) {
-  if (!pdf) return { status: 400, why: "empty" };
-  if (typeof pdf !== "string") return { status: 400, why: "not a string" };
-  if (pdf.length > MAX_BASE64_CHARS) return { status: 413, why: "too large" };
-  return { status: 200, why: "accepted" };
-}
+//
+// This used to hold its own copy of the guard, under a comment saying it mirrored the one
+// in api/convert.js. A mirror can go green while the shipped guard is broken, which is the
+// failure this repository has already been bitten by twice. It imports the real one now.
+import { checkPdfInput as guard, MAX_BASE64_CHARS } from "./api/convert.js";
 
 const CASES = [
   // [name, value, expected status]
@@ -34,6 +30,9 @@ const CASES = [
 
   // Oversized.
   ["8 M chars of base64",             "A".repeat(8_000_000),              413],
+  // The boundary itself, derived from the exported cap rather than from a copy of it.
+  ["exactly at the cap",              "A".repeat(MAX_BASE64_CHARS),       200],
+  ["one character over",              "A".repeat(MAX_BASE64_CHARS + 1),   413],
 ];
 
 let pass = 0, fail = 0;
@@ -43,7 +42,7 @@ for (const [name, val, want] of CASES) {
   if (ok) { pass++; console.log(`  ok    ${String(want).padEnd(3)} ${name}`); }
   else {
     fail++;
-    console.log(`  FAIL  ${name}: expected ${want}, got ${got.status} (${got.why})`);
+    console.log(`  FAIL  ${name}: expected ${want}, got ${got.status} (${got.error ?? "accepted"})`);
   }
 }
 
