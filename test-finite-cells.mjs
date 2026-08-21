@@ -6,11 +6,11 @@
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 
-// Mirrors the guard in api/convert.js.
-const guard = (value) =>
-  (typeof value === "number" && !Number.isFinite(value)) ? "" : value;
-
-const finiteOr0 = (n) => (Number.isFinite(n) ? n : 0);
+// The real guards, not copies of them. cellValue is what every data cell passes through
+// and finiteOr0 is what the parsers hand it; both used to be restated here under a comment
+// saying they mirrored api/convert.js, and a restatement can go green while the shipped
+// code is broken.
+import { cellValue as guard, finiteOr0 } from "./api/convert.js";
 
 console.log("A. the parse fall-throughs no longer yield NaN");
 const PARSES = [
