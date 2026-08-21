@@ -196,6 +196,41 @@ console.log("\n  de reden van een overgeslagen regel wordt vertaald, niet doorge
   }
 }
 
+
+console.log("\n  het lijstje 'nog te doen'");
+{
+  // The converter already knows all of this; it just never said it. Two entries always, the
+  // third only when the invoice states no per-line weights.
+  const plain = render(React.createElement(app.SingleDoneState, {
+    result: clean, onReset: noop, onRedownload: noop, onForceDownload: noop, t: T }));
+  ok("staat op een schone conversie",       plain.includes(T.todoTitle));
+  ok("noemt rij 13",                        plain.includes("rij 13"));
+  ok("noemt de Difference-rij",             plain.includes("Difference"));
+  ok("geen regelgewichten als die er zijn", !plain.includes("kolom G"));
+
+  const noWeight = render(React.createElement(app.SingleDoneState, {
+    result: { ...clean, noWeightCount: 4, noWeightItems: ["2500055", "2500056"] },
+    onReset: noop, onRedownload: noop, onForceDownload: noop, t: T }));
+  ok("noemt de ontbrekende regelgewichten", noWeight.includes("kolom G"));
+  ok("met het aantal erbij",                noWeight.includes("4 regels"));
+  ok("en de artikelnummers",                noWeight.includes("2500055"));
+
+  // A rejected conversion has no workbook to complete, so no checklist.
+  const failed = render(React.createElement(app.SingleDoneState, {
+    result: { ...clean, error: "kapot" }, onReset: noop, onRedownload: noop,
+    onForceDownload: noop, t: T }));
+  ok("niet bij een fout", !failed.includes(T.todoTitle));
+
+  // Both locales have every string the component reaches for.
+  for (const loc of ["NL", "EN"]) {
+    const L2 = app.i18n[loc];
+    ok(`${loc} heeft alle teksten`,
+       typeof L2.todoTitle === "string" && typeof L2.todoGrossRow === "string"
+       && typeof L2.todoDifference === "string" && typeof L2.todoLineWeights === "function");
+  }
+}
+
 fs.rmSync(out, { force: true });
-console.log(`\n${pass} geslaagd, ${fail} gefaald`);
+console.log(`
+${pass} geslaagd, ${fail} gefaald`);
 process.exit(fail ? 1 : 0);

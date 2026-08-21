@@ -125,6 +125,12 @@ export const i18n = {
     anyway:        "Toch",
     silentGapNote: (n) => `Let op: ${n} itemnummer(s) uit de PDF zijn niet in de export opgenomen —`,
     uncheckedAdvice: "tel het aantal en het totaal zelf na tegen de PDF, of stuur de factuur door.",
+    todoTitle:        "Nog met de hand te doen",
+    todoGrossRow:     "Brutogewicht invullen in rij 13 van het Excel — die blijft leeg tot de verpakking bekend is.",
+    todoLineWeights:  (n) => n === 1
+      ? "Bij 1 regel staat geen gewicht op de factuur; die cel in kolom G is leeg:"
+      : `Bij ${n} regels staat geen gewicht op de factuur; die cellen in kolom G zijn leeg:`,
+    todoDifference:   "Onderaan het Excel, onder SUBTOTAL TARIFF NO., moet de rij Difference drie nullen tonen.",
     degradedNote:  "De controlegegevens konden niet worden uitgelezen. Het Excel is aangemaakt, maar de waarschuwingen hieronder zijn mogelijk onvolledig — controleer dit bestand handmatig.",
     noWeightNote: (n) => n === 1
       ? "Let op: bij 1 regel staat geen brutogewicht op de factuur. Die cel blijft leeg in het Excel — vul hem handmatig aan:"
@@ -237,6 +243,12 @@ export const i18n = {
     anyway:        "Anyway",
     silentGapNote: (n) => `Note: ${n} item number(s) from the PDF were not included in the export —`,
     uncheckedAdvice: "check the quantity and total against the PDF yourself, or forward the invoice.",
+    todoTitle:        "Still to do by hand",
+    todoGrossRow:     "Fill in the gross weight in row 13 of the workbook — it stays empty until the packaging is known.",
+    todoLineWeights:  (n) => n === 1
+      ? "1 line has no weight on the invoice; that cell in column G is empty:"
+      : `${n} lines have no weight on the invoice; those cells in column G are empty:`,
+    todoDifference:   "At the bottom of the workbook, under SUBTOTAL TARIFF NO., the Difference row must show three zeros.",
     degradedNote:  "The validation data could not be read. The Excel was created, but the warnings below may be incomplete — check this file by hand.",
     noWeightNote: (n) => n === 1
       ? "Note: 1 line has no gross weight on the invoice. That cell is left empty in the Excel — fill it in by hand:"
@@ -1049,6 +1061,57 @@ function UncheckedWarning({ result, t }) {
   );
 }
 
+// What is still handwork on this file.
+//
+// The converter knows this exactly — which lines have no gross weight, that row 13 is
+// always left empty, that the tariff breakdown carries its own check — and until now it
+// knew it silently. All of it was written down in the README, which is a file nobody opens
+// at the moment they need it: the job does not end at "downloaded", it ends at a customs
+// declaration that someone completed and checked.
+//
+// Deliberately not styled as a warning. The warnings above say something is wrong; this
+// says what you always do by hand, on every file. Two entries are on every invoice and the
+// third only when it applies, so the list is short enough to actually be read.
+function StillToDo({ result, t }) {
+  if (!result || result.error) return null;
+
+  const items = [];
+  // Row 13 in the workbook is intentionally blank — the gross weight is known once the
+  // packaging is, not when the invoice is written.
+  items.push({ key: "grossRow", text: t.todoGrossRow });
+  // Per-line weights, on the one template that states the weight only in the header.
+  if (result.noWeightCount > 0) {
+    items.push({ key: "lineWeights", text: t.todoLineWeights(result.noWeightCount),
+                 detail: (result.noWeightItems || []).slice(0, 8).join(", ") });
+  }
+  // The workbook checks its own tariff breakdown; it is only a check if someone looks.
+  items.push({ key: "difference", text: t.todoDifference });
+
+  return (
+    <div style={{
+      background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8,
+      padding: "0.7rem 0.9rem", marginBottom: "0.75rem", textAlign: "left",
+    }}>
+      <p style={{ fontSize: "0.72rem", color: T.textDim, fontWeight: 600, margin: "0 0 0.4rem" }}>
+        {t.todoTitle}
+      </p>
+      <ul style={{ margin: 0, paddingLeft: "1.1rem", listStyle: "none" }}>
+        {items.map(i => (
+          <li key={i.key} style={{ fontSize: "0.72rem", color: T.textDim, lineHeight: 1.6, marginLeft: "-1.1rem" }}>
+            <span style={{ color: T.textMute, marginRight: "0.4rem" }}>□</span>
+            {i.text}
+            {i.detail && (
+              <span style={{ fontFamily: "JetBrains Mono, monospace", color: T.textMute, marginLeft: "0.3rem" }}>
+                {i.detail}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // Every warning a result can carry, in one place. Each of these used to be placed by hand
 // per screen, and each time a new screen appeared they were wired into only one of them.
 // A screen renders this component and gets all of them, including any added later.
@@ -1188,6 +1251,7 @@ export function SingleDoneState({ result, onReset, onRedownload, onForceDownload
           only, so the moment a conversion was rejected every explanation of why
           disappeared — exactly when it was needed. */}
       {!isError && <ResultWarnings result={result} t={t} />}
+      {isOk && <StillToDo result={result} t={t} />}
 
       {/* totalItems is a line count, not a piece count — passing qty here
           produced "+213 more rows" on a forty-line invoice. */}
