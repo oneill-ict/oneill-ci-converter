@@ -34,8 +34,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { extractLines, readItemRows } from "./lib/invoice-rows.mjs";
-import { readGoodsTotal } from "./lib/invoice-footer.mjs";
+import { extractLines, groupIntoLines, readItemRows } from "./lib/invoice-rows.mjs";
+import { readFooter } from "./lib/invoice-footer.mjs";
 
 const pdfParse = createRequire(import.meta.url)("pdf-parse");
 const BASE = process.env.CI_CORPUS_DIR || "C:/Users/sjoerd.lier/Downloads/ci-training-files";
@@ -82,12 +82,62 @@ function isTableLine(line) {
   return false;
 }
 
+// ── Raw runs, for testing the line grouping itself ─────────────────────────
+// The fixtures above store the *output* of extractLines, so a change to how runs are
+// grouped into lines is invisible to them — proved by accident: the grouping rule changed
+// from a fixed 2-point bucket to one relative to text height, all 96 fixture assertions
+// stayed green, and only regenerating the files showed one had moved. So one fixture also
+// records the runs before grouping.
+//
+// The item table goes in verbatim; it holds no customer data. The invoice-level block
+// does, so its values are replaced while the labels, positions and text heights stay
+// exactly as measured — those are what the grouping is judged on, and the values are not.
+// This is the one place in this repository where anonymising is the right tool, because
+// here the geometry is the point and the content is not.
+const HEADER_LABELS_KEEP = new Set([
+  "Date:", "Order number:", "Delivery terms:", "Number of boxes:", "Gross weight:",
+  "Document No.:", "Transport:", "Transport no.:", "Shipment Numbers:", "Comments:",
+  "VAT number:", "Delivery address", "Billing address", "COMMERCIAL INVOICE",
+]);
+
+// A stand-in of the same shape, so nothing about the layout changes.
+function scrub(text) {
+  if (HEADER_LABELS_KEEP.has(text.trim())) return text;
+  return text
+    .replace(/\d/g, "4")
+    .replace(/[A-Z]/g, "X")
+    .replace(/[a-z]/g, "x");
+}
+
+function rawFixture(runs, tableFromY) {
+  return runs.map(r => {
+    const inTable = r.y <= tableFromY;
+    return {
+      page: r.page, x: round(r.x), y: round(r.y), h: round(r.h),
+      text: inTable ? r.text : scrub(r.text),
+    };
+  });
+}
+
 for (const [file, name, describes] of WANTED) {
   const full = all.find(p => p.endsWith(file));
   if (!full) { console.error(`  ONTBREEKT  ${file}`); process.exitCode = 1; continue; }
 
   const buf   = fs.readFileSync(full);
-  const lines = await extractLines(buf, pdfParse);
+  // Collected here rather than taken from extractLines, so the raw runs and the grouped
+  // lines provably come from the same read.
+  const runs = [];
+  await pdfParse(buf, { max: 100, pagerender: async (pd) => {
+    const tc = await pd.getTextContent({ normalizeWhitespace: false, disableCombineTextItems: true });
+    for (const it of tc.items) {
+      const t = (it.str || "").trim();
+      if (!t) continue;
+      const [, , , d, x, y] = it.transform;
+      runs.push({ page: pd.pageIndex + 1, x, y, h: Number(it.height) || Math.abs(d) || 1, text: t });
+    }
+    return "";
+  }});
+  const lines = groupIntoLines(runs);
   const text  = (await pdfParse(buf, { max: 100 })).text;
 
   const kept = lines.filter(isTableLine).map(l => ({
@@ -129,7 +179,9 @@ for (const [file, name, describes] of WANTED) {
   }
 
   const { rows, columns, discountPerPiece, currency, skipped } = readItemRows(kept);
-  const footer = readGoodsTotal(text.replace(/\n/g, " "));
+  // From the full document, not from `kept` — the summary block is not table content, so
+  // the allowlist excludes it. The footer figures are the oracle the fixture records.
+  const footer = readFooter(lines);
 
   const fixture = {
     name, describes,
@@ -155,6 +207,26 @@ for (const [file, name, describes] of WANTED) {
     },
     lines: kept,
   };
+
+  // One is enough, and it has to be the invoice whose header renders at text height
+  // 0.349 — the case a fixed tolerance got wrong.
+  if (name === "large-quantities") {
+    const titleY = Math.max(...lines
+      .filter(l => l.runs.some(r => /COMMERCIAL INVOICE/i.test(r.text)))
+      .map(l => l.y), -Infinity);
+    const raw = {
+      name: `${name}-raw-runs`,
+      describes: "the runs before grouping, from the invoice whose header block renders at text height 0.349",
+      builtBy: "make-fixtures.mjs — do not hand-edit",
+      kept: "the item table verbatim; above the COMMERCIAL INVOICE title the labels, positions and text heights are real and the values are replaced character-for-character",
+      expected: { lines: lines.length, runs: runs.length },
+      runs: rawFixture(runs, titleY),
+    };
+    const rawOut = path.join(OUT, `${raw.name}.json`);
+    fs.writeFileSync(rawOut, JSON.stringify(raw, null, 1) + "\n");
+    console.log(`  ok  ${raw.name.padEnd(24)} ${runs.length} runs -> ${lines.length} regels  ` +
+                `${Math.round(fs.statSync(rawOut).size / 1024)} KB`);
+  }
 
   const out = path.join(OUT, `${name}.json`);
   fs.writeFileSync(out, JSON.stringify(fixture, null, 1) + "\n");

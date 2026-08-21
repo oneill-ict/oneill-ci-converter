@@ -62,7 +62,9 @@ CI_CORPUS_DIR=/pad/naar/ci-training-files npm test
 De map staat op de laptop van Sjoerd onder `Downloads/ci-training-files`.
 
 Zonder het corpus test je nog steeds tegen echte facturen: in `test/fixtures` staan zes
-facturen als *posities* — de artikeltabel zonder kopblok, dus zonder klantgegevens. Nieuwe
+facturen als *posities* — de artikeltabel zonder kopblok, dus zonder klantgegevens. Plus
+één bestand met de runs *voor* het groeperen in regels, want die stap is anders door geen
+enkele test gedekt; daarin zijn de labels en posities echt en de waarden vervangen. Nieuwe
 maken (heeft het corpus nodig):
 
 ```bash
@@ -93,22 +95,33 @@ Daarna zelf controleren met een echte factuur, niet alleen aannemen dat het goed
 
 ## Nog niet geregeld
 
-**Er zit geen snelheidsbegrenzing op `/api/convert`.** Iedereen die de URL kent kan het
-eindpunt onbeperkt aanroepen; het is een open endpoint zonder login en elke aanroep kost
-rekentijd. Instellen kan alleen via het dashboard:
+**Er zit nog geen snelheidsbegrenzing op `/api/convert`.** Het is een open endpoint
+zonder login, en elke aanroep kost rekentijd. DDoS-mitigatie staat overigens standaard
+aan bij Vercel, op elk plan, en verkeer dat de firewall blokkeert wordt niet gefactureerd
+— het gat is dus kleiner dan het klinkt, maar het is er.
 
-Op vercel.com, bij team **oneilleurope-ict**, project **oneill-ci-converter**, onder
-**Firewall**: een regel toevoegen die het pad `/api/convert` begrenst op ongeveer **60
-verzoeken per minuut per IP-adres**.
+De regel staat al **als concept** klaar (via `vercel firewall rules add`). Bekijken en
+activeren:
 
-De exacte knoppen noem ik hier niet, want ik heb dat dashboard niet zelf gezien en
-verzonnen stappen zijn erger dan geen stappen. Twee dingen om op te letten die
-onafhankelijk van de vormgeving gelden: begrens op **pad**, niet op het hele project
-(anders raak je ook de website zelf), en een regel is pas actief nadat je hem hebt
-gepubliceerd — opslaan alleen is niet genoeg.
+```bash
+vercel firewall diff
+vercel firewall publish
+```
 
-60 per minuut is ruim: de zwaarste factuur in het corpus duurt 1,7 seconde, en een
-normale batch is een handvol bestanden.
+Weghalen kan met `vercel firewall discard`.
+
+Hij staat op `log`, niet op blokkeren: 120 verzoeken per 60 seconden per IP, en bij
+overschrijding alleen registreren. Zo zie je eerst of er ooit iemand in de buurt komt
+voor je legitiem verkeer riskeert. Dichtdraaien is later één wijziging:
+
+```bash
+vercel firewall rules edit "Rate limit /api/convert" --rate-limit-action deny --yes
+```
+
+Twee dingen om te weten bij het kiezen van dat getal. **De teller loopt per IP**, en zit
+het kantoor achter één uitgaand IP dan geldt de limiet voor iedereen samen — daarom 120
+en niet 60. En **de tellers zijn per regio**, dus het feitelijke totaal kan een veelvoud
+zijn. Het is een bovengrens tegen misbruik, geen precieze meter.
 
 ## Waar de rest staat
 
@@ -123,7 +136,8 @@ Grofweg:
 |---|---|
 | `api/convert.js` | het endpoint: bewaking, validatie, Excel |
 | `lib/invoice-rows.mjs` | de artikelregels uit de tabelgeometrie van de PDF |
-| `lib/invoice-footer.mjs` | de "Goods total"-regel, en de vergelijking daarmee |
+| `lib/invoice-header.mjs` | datum, ordernummer, factuuradres — als kolommen |
+| `lib/invoice-footer.mjs` | de "Goods total"-regel, de korting en de btw, en de vergelijking daarmee |
 | `lib/invoice-address.mjs` | de stad voor "DDP \<stad\>" |
 | `src/App.jsx` | de voorkant |
 | `src/lib/trust.js` | of een export vertrouwd mag worden, en hoe hij dan heet |

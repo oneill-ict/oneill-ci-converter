@@ -2,7 +2,8 @@
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import { extractLines, readItemRows } from "../lib/invoice-rows.mjs";
-import { readGoodsTotal, agreesWithFooter, parseEuropeanNumber, round2 } from "../lib/invoice-footer.mjs";
+import { readFooter, agreesWithFooter, round2 } from "../lib/invoice-footer.mjs";
+import { readHeader } from "../lib/invoice-header.mjs";
 import { findCity } from "../lib/invoice-address.mjs";
 
 // There used to be `export const config = { api: { bodyParser: { sizeLimit:
@@ -52,36 +53,12 @@ const CSV_UNSAFE_START = /^[=+\-@\t\r]/;
 const csvSafe = (v) =>
   (typeof v === "string" && CSV_UNSAFE_START.test(v)) ? "'" + v : v;
 
-function parseInvoiceText(text, lines) {
-  const invoice = {
-    date: "", orderNumber: "", deliveryTerms: "", numberOfBoxes: "",
-    grossWeight: "", billingName: "", billingAddress: [],
-    items: [], invoiceDiscount: 0, vat: 0,
-    _validation: null,
-  };
+function parseInvoice(lines) {
+  const invoice = { items: [], _validation: null };
 
-  // ── Header fields ─────────────────────────────────────────────────────────
-  const dateM     = /Date:\s*([\d\-]+)/.exec(text);
-  const orderM    = /Order number:\s*([\d,]+)/i.exec(text);
-  const deliveryM = /Delivery terms:\s*(\S+)/.exec(text);
-  const boxesM    = /Number of boxes:\s*(\d+)/.exec(text);
-  const weightM   = /Gross weight:\s*([\d.,]+ gr)/.exec(text);
-  if (dateM)     invoice.date          = dateM[1].trim();
-  if (orderM)    invoice.orderNumber   = orderM[1].trim();
-  if (deliveryM) invoice.deliveryTerms = deliveryM[1].trim();
-  if (boxesM)    invoice.numberOfBoxes = boxesM[1].trim();
-  if (weightM)   invoice.grossWeight   = weightM[1].trim();
-
-  // Stop at "O'Neill Europe B.V." — the shipper block always follows the billing
-  // address, regardless of destination country (CH, MT, etc.).
-  // Previously used "Switzerland" which broke non-CH invoices (e.g. Malta/EUR),
-  // and before that "O'Neill" which broke B2C invoices where the recipient is O'Neill.
-  const billingBlock = /Billing address\s+([\s\S]+?)O'Neill Europe B\.V\./i.exec(text);
-  if (billingBlock) {
-    const addrLines = billingBlock[1].trim().split(/\n/).map(l => l.trim()).filter(Boolean);
-    invoice.billingName    = addrLines[0] || "";
-    invoice.billingAddress = addrLines.slice(1);
-  }
+  // ── Invoice-level fields ──────────────────────────────────────────────────
+  // From the block above the item table, read as columns. See lib/invoice-header.mjs.
+  Object.assign(invoice, readHeader(lines));
 
   // ── Auto-city: append the destination city to DDP delivery terms ──────────
   // See lib/invoice-address.mjs for why this is not one regex. The rule that
@@ -91,18 +68,13 @@ function parseInvoiceText(text, lines) {
     invoice.deliveryTerms = `DDP ${city}`;
   }
 
-  // ── B2B detection: Spedag / Kaiseraugst ship-to = B2B invoice ─────────────
-  invoice.isB2B = [invoice.billingName, ...(invoice.billingAddress || [])].some(l =>
-    /spedag|kaiseraugst/i.test(l)
-  );
-
   // ── Invoice footer ────────────────────────────────────────────────────────
-  // Flattening is still right for the footer: "Goods total 226 8.429,10 CHF" is a
-  // run of prose, not a table, and readGoodsTotal already handles both the spaced
-  // and the glued layout. Only the item table ever needed geometry.
-  const flatText = text.replace(/\n/g, " ");
-  const { qty: expectedQty, total: expectedTotal, creditNote } = readGoodsTotal(flatText);
-  invoice.creditNote = !!creditNote;
+  const footer = readFooter(lines);
+  invoice.creditNote      = footer.creditNote;
+  invoice.invoiceDiscount = footer.discount;
+  invoice.vat             = footer.vat;
+  const expectedQty   = footer.qty;
+  const expectedTotal = footer.total;
 
   // ── Items ─────────────────────────────────────────────────────────────────
   // Read from the PDF's own table geometry. Everything that used to live here —
@@ -114,8 +86,11 @@ function parseInvoiceText(text, lines) {
   // comes from its own column.
   const { rows, columns, skipped, unplaced, currency, missingColumns } = readItemRows(lines);
 
-  invoice.currency = currency
-    || (/\b(CHF|EUR|GBP|USD|CAD)\b/.exec(text) || [, "CHF"])[1];
+  // No fallback to a document-wide currency search any more. That search is what let a
+  // header or a terms paragraph naming another currency set the whole export to it, and
+  // it needed the flattened text. When the item rows carry no currency at all there are
+  // no amounts to label, so the historical default stands.
+  invoice.currency = currency || "CHF";
 
   invoice.items = rows.map(r => ({
     itemNo: r.itemNo, item: r.item, colour: r.colour, colourNo: r.colourNo,
@@ -182,12 +157,6 @@ function parseInvoiceText(text, lines) {
     missingColumns: missingColumns || null,
     columnsFound:   columns.map(c => c.key).filter(Boolean),
   };
-
-  // Invoice-level discount and VAT
-  const invDiscM = /Discount\s+([\d.,]+)\s*(?:CHF|EUR|GBP|USD|CAD)/i.exec(text);
-  if (invDiscM) invoice.invoiceDiscount = parseEuropeanNumber(invDiscM[1]);
-  const vatM = /VAT\s+([\d.,]+)\s*(?:CHF|EUR|GBP|USD|CAD)/i.exec(text);
-  if (vatM) invoice.vat = parseEuropeanNumber(vatM[1]);
 
   return invoice;
 }
@@ -745,36 +714,34 @@ async function handleConvert(req, res) {
     return res.status(400).json({ error: "Ongeldige base64-data" });
   }
 
-  let pdfData, lines;
+  let lines;
   try {
-    // Page cap: pdf-parse defaults to every page. A compressed content stream
-    // expands enormously, so an unbounded page count is a second way to spend
-    // the whole budget. The largest real invoice is 30 pages.
-    pdfData = await pdfParse(pdfBuffer, { max: 100 });
-    // A second pass, for the positions this time. The invoice-level fields (date,
-    // order number, billing address) are still read from pdf-parse's own text
-    // layout: the billing block is two columns side by side at the same height, so
-    // rebuilding the text from positions interleaves the recipient with the
-    // shipper. Reading that block by column is a worthwhile change, but not this
-    // one. Two passes cost about a second on the largest real invoice, against a
-    // 30-second budget.
+    // One pass now. pdf-parse's own flattened text is not used anywhere any more —
+    // every field comes from positions, including the invoice-level block and the
+    // footer, so the second parse this used to need is gone.
+    //
+    // The page cap lives in extractLines: pdf-parse defaults to every page, and a
+    // compressed content stream expands enormously, so an unbounded page count is a
+    // way to spend the whole budget. The largest real invoice is 30 pages.
     lines = await extractLines(pdfBuffer, pdfParse);
   } catch (e) {
     return res.status(422).json({ error: `PDF kon niet worden gelezen: ${e.message}` });
   }
 
-  // Text cap before the regex pipeline. The largest real invoice extracts to
-  // 55 KB; nothing legitimate comes near this. Without it, whatever pdf-parse
-  // produced went straight into the parser however large.
+  // Size cap, measured on what the parser actually consumes rather than on a text
+  // rendering nothing reads. The largest real invoice is 55 KB of text; nothing
+  // legitimate comes near this.
   const MAX_TEXT_CHARS = 2_000_000;
-  if ((pdfData.text || "").length > MAX_TEXT_CHARS) {
-    console.log(JSON.stringify({ event: "ci_text_too_large", chars: pdfData.text.length }));
+  const textChars = lines.reduce(
+    (sum, l) => sum + l.runs.reduce((n, r) => n + r.text.length, 0), 0);
+  if (textChars > MAX_TEXT_CHARS) {
+    console.log(JSON.stringify({ event: "ci_text_too_large", chars: textChars }));
     return res.status(422).json({
       error: "Deze PDF bevat ongewoon veel tekst en is niet als factuur te verwerken.",
     });
   }
 
-  const invoice = parseInvoiceText(pdfData.text, lines);
+  const invoice = parseInvoice(lines);
 
   if (invoice.items.length === 0) {
     console.log(JSON.stringify({ event: "ci_no_items", file: logSafeName(filename), currency: invoice.currency }));
@@ -849,9 +816,14 @@ async function handleConvert(req, res) {
   if (typeof filename === "string" && filename) {
     exportName = filename.replace(/\.[^.]+$/, ""); // strip extension
   } else {
-    const orderSlug = invoice.orderNumber
-      ? invoice.orderNumber.replace(/,/g, "-")
-      : invoice.date.replace(/[^0-9-]/g, "") || "invoice";
+    // One invoice can carry many order numbers — 86 on the largest in the corpus — so
+    // the whole list makes an unusable filename. The first number plus how many follow
+    // it identifies the file and stays short: CI_3354034+4.
+    const orders = (invoice.orderNumber || "")
+      .split(",").map(s => s.trim()).filter(Boolean);
+    const orderSlug = orders.length === 0 ? (invoice.date.replace(/[^0-9-]/g, "") || "invoice")
+                    : orders.length === 1 ? orders[0]
+                    : `${orders[0]}+${orders.length - 1}`;
     exportName = `CI_${orderSlug}`;
   }
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");

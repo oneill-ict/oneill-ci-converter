@@ -24,7 +24,11 @@ const eq = (label, got, want) => {
   ok ? pass++ : fail++;
 };
 
-const files = fs.readdirSync(DIR).filter(f => f.endsWith(".json")).sort();
+// Only the grouped-line fixtures. test/fixtures also holds one fixture of the runs
+// *before* grouping, which test-extract-lines.mjs owns — selected by shape rather than by
+// filename so a new fixture cannot land in the wrong suite by being named badly.
+const files = fs.readdirSync(DIR).filter(f => f.endsWith(".json")).sort()
+  .filter(f => Array.isArray(JSON.parse(fs.readFileSync(path.join(DIR, f), "utf8")).lines));
 if (files.length === 0) { console.error("Geen fixtures gevonden."); process.exit(1); }
 
 // The fixtures are only safe to commit because they contain nothing but table content.

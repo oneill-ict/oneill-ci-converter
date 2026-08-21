@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { extractLines, readItemRows } from "./lib/invoice-rows.mjs";
-import { readGoodsTotal } from "./lib/invoice-footer.mjs";
+import { readFooter } from "./lib/invoice-footer.mjs";
 
 const require  = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
@@ -37,10 +37,9 @@ for (const file of findPdfs(BASE).sort()) {
   const name = path.basename(file);
   const buf  = fs.readFileSync(file);
 
-  let lines, flat;
+  let lines;
   try {
     lines = await extractLines(buf, pdfParse);
-    flat  = (await pdfParse(buf, { max: 100 })).text.replace(/\n/g, " ");
   } catch (e) {
     failures.push({ name, why: `read error: ${e.message}` });
     fail++; continue;
@@ -48,7 +47,7 @@ for (const file of findPdfs(BASE).sort()) {
 
   const { rows, skipped, unplaced, missingColumns } = readItemRows(lines);
   if (missingColumns) { console.log(`  FAIL ${pad(name,44)} kolommen ontbreken: ${missingColumns.join(", ")}`); fail++; failures.push({name, why:"kolommen ontbreken: "+missingColumns.join(", ")}); continue; }
-  const { qty: expQty, total: expTotal } = readGoodsTotal(flat);
+  const { qty: expQty, total: expTotal } = readFooter(lines);
 
   if (rows.length === 0) {
     console.log(`${pad(name, 46)} ${pad("— no item table", 30)}`);

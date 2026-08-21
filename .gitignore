@@ -11,3 +11,24 @@ dist/
 # never reach api/ or a deploy — see .vercelignore.
 audit-*.mjs
 api/_*
+
+# Scratch files: probes and one-off harnesses that pile up beside the real tests.
+# They are not test suites — one of them was a fourth copy of the parser that printed
+# "SELF-VALIDATED - safe to push" while exercising code that had not shipped for two
+# changes. run-tests.mjs takes its list from git ls-files, so untracked is the same as
+# invisible to the suite; keeping them untracked is deliberate.
+harness_convert.mjs
+gen_report.cjs
+test-debug-bens.mjs
+test-diag.mjs
+test-excel.mjs
+test-filename.mjs
+test-fixes.mjs
+test-new-b2c.mjs
+test-parser.mjs
+test-realparse.mjs
+*.xlsx
+*.xls
+AUDIT.md
+PROJECT-BLUEPRINT.md
+*.pdf
