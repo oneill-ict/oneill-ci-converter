@@ -167,5 +167,35 @@ console.log("\n  factuur met korting: alle rijnummers eronder schuiven");
      /^K\d+$/.test(cells.get(`B${invoiceRow}`)?.formula ?? ""), true);
 }
 
-console.log(`\n${pass} geslaagd, ${fail} gefaald`);
+
+// ── Two decisions that look like defects and are not ────────────────────────
+// Both were flagged by an audit and confirmed as intended. Pinned here so a well-meant
+// correction fails a test and reads the reasoning, rather than quietly changing what a
+// customs document says.
+console.log("\n  de kopregels die bewust zo zijn");
+{
+  const { invoice } = invoiceFrom("n-prefix-item-numbers");
+  const buffer = await buildExcel(invoice);
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer);
+  const ws = wb.worksheets[0];
+  const at = (row) => String(ws.getRow(row).getCell(3).value ?? "");
+  const label = (row) => String(ws.getRow(row).getCell(1).value ?? "");
+
+  // Row 10 carries the logistics number derived from the invoice date, not the ERP order
+  // reference — unchanged since the first commit, and unchanged by the positional rewrite.
+  eq("rij 10 heet nog hetzelfde", label(10), "Order number / Invoice nr.:");
+  eq("rij 10 is de datum-suggestie", at(10), "270425-1");
+  eq("en niet het ordernummer van de factuur", at(10) === invoice.orderNumber, false);
+
+  // Rows 12 and 13: the invoice's "Gross weight" figure goes in "Nett weight", and the
+  // gross weight is left for someone to fill in once packaging is known.
+  eq("rij 12 heet Nett weight", label(12), "Nett weight:");
+  eq("rij 12 draagt het gewicht uit de PDF", at(12), "65 KGS");
+  eq("rij 13 heet Gross weight", label(13), "Gross weight:");
+  eq("rij 13 blijft leeg", at(13), "");
+}
+
+console.log(`
+${pass} geslaagd, ${fail} gefaald`);
 process.exit(fail ? 1 : 0);
