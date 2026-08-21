@@ -125,6 +125,8 @@ export const i18n = {
     anyway:        "Toch",
     silentGapNote: (n) => `Let op: ${n} itemnummer(s) uit de PDF zijn niet in de export opgenomen —`,
     uncheckedAdvice: "tel het aantal en het totaal zelf na tegen de PDF, of stuur de factuur door.",
+    reportedSent:   "Deze fout is automatisch gemeld — je hoeft hem niet zelf door te geven.",
+    reportedFailed: "Deze fout kon niet automatisch worden gemeld. Stuur de factuur door naar Sjoerd.",
     todoTitle:        "Nog met de hand te doen",
     todoGrossRow:     "Brutogewicht invullen in rij 13 van het Excel — die blijft leeg tot de verpakking bekend is.",
     todoLineWeights:  (n) => n === 1
@@ -243,6 +245,8 @@ export const i18n = {
     anyway:        "Anyway",
     silentGapNote: (n) => `Note: ${n} item number(s) from the PDF were not included in the export —`,
     uncheckedAdvice: "check the quantity and total against the PDF yourself, or forward the invoice.",
+    reportedSent:   "This failure has been reported automatically — you do not need to pass it on.",
+    reportedFailed: "This failure could not be reported automatically. Please forward the invoice to Sjoerd.",
     todoTitle:        "Still to do by hand",
     todoGrossRow:     "Fill in the gross weight in row 13 of the workbook — it stays empty until the packaging is known.",
     todoLineWeights:  (n) => n === 1
@@ -286,6 +290,41 @@ const fmtCHF = (n) =>
 // the whole sequential batch open indefinitely with no way to cancel it.
 const REQUEST_TIMEOUT_MS = 40_000;
 
+// Hands a finished batch to the reporting endpoint, once.
+//
+// Only the shape of what happened goes over the wire — filenames, counts, item numbers, the
+// failure kind. Not the PDF, not the workbook. The endpoint decides what is worth a message,
+// so that rule lives in one place instead of being duplicated here.
+//
+// Returns true only when a report was actually sent. Anything else is false, because the
+// screen tells the user it has been reported and that has to be true when it says it.
+async function reportFailures(rows) {
+  const failures = rows
+    .filter(r => r.kind)
+    .map(r => ({
+      name: r.name, kind: r.kind,
+      qty: r.qty ?? null, expectedQty: r.expectedQty ?? null,
+      total: r.total ?? null, expectedTotal: r.expectedTotal ?? null,
+      missingColumns: r.missingColumns ?? null,
+      unparsedItemNos: r.unparsedItemNos ?? [],
+      error: r.error ?? null,
+    }));
+  if (failures.length === 0) return false;
+
+  try {
+    const res = await fetch("/api/convert-report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ failures, context: { total: rows.length, userAgent: navigator.userAgent } }),
+    });
+    if (!res.ok) return false;
+    const body = await res.json().catch(() => ({}));
+    return body.reported === true;
+  } catch {
+    return false;
+  }
+}
+
 async function convertFile(file, force = false, t) {
   const arrayBuffer = await file.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
@@ -319,6 +358,8 @@ async function convertFile(file, force = false, t) {
     // Validation mismatch: expose structured data for the friendly warning UI
     if (res.status === 422 && err.parsedQty != null) {
       const e = new Error("validation_mismatch");
+      e.kind             = err.kind || "validation";
+      e.missingColumns   = err.missingColumns || null;
       e.isPartial        = true;
       e.parsedQty        = err.parsedQty;
       e.expectedQty      = err.expectedQty;
@@ -335,7 +376,12 @@ async function convertFile(file, force = false, t) {
       e.endTotalOk       = err.endTotalOk;
       throw e;
     }
-    throw new Error(err.error || httpErrorMessage(res.status, t));
+    const generic = new Error(err.error || httpErrorMessage(res.status, t));
+    // The server says what kind of failure this is. Without it the client would have to
+    // read a Dutch sentence to decide whether it is worth telling anyone about — the exact
+    // coupling that made the skip reasons untranslatable.
+    generic.kind = err.kind || null;
+    throw generic;
   }
 
   const qty              = parseInt(res.headers.get("X-Validation-Qty")    || "0", 10);
@@ -475,6 +521,7 @@ export default function App() {
             noWeightItems: e.noWeightLines || [],
             noWeightCount: (e.noWeightLines || []).length,
             qtyOk: e.qtyOk, totalOk: e.totalOk, endTotalOk: e.endTotalOk, currency: e.currency,
+            kind: e.kind, missingColumns: e.missingColumns || null,
             preview: [], error: null, isPartial: true, file,
           };
           try {
@@ -496,13 +543,20 @@ export default function App() {
           }
           batch.push(row);
         } else {
-          batch.push({ name: file.name, xlsxName, blob: null, qty: null, total: null, preview: [], error: e.message, isPartial: false, file });
+          batch.push({ name: file.name, xlsxName, blob: null, qty: null, total: null,
+            preview: [], error: e.message, isPartial: false, kind: e.kind || null, file });
         }
       }
     }
 
     setResults(batch);
     setPhase("done");
+
+    // One report for the whole batch, once, after the conversions are done. The server
+    // decides what is worth reporting; this only hands over what happened. It never blocks
+    // the screen and never throws: the workbook is already downloaded by now, and a failing
+    // report must not turn a finished conversion into an error.
+    reportFailures(batch).then(setReported).catch(() => setReported(null));
 
     // Persist only conversions that can be vouched for. The old filter allowed
     // unchecked and uncertain results through, and the history panel then drew
@@ -582,7 +636,12 @@ export default function App() {
     triggerDownload(zipBlob, "commercial-invoices.zip");
   };
 
-  const reset = () => { setPhase("idle"); setResults([]); setNotice(null); setProgress({ i: 0, total: 0, name: "" }); };
+  // null = nothing to report or not yet known, true = a report was sent, false = there was
+  // something to report and it did not get through. The screen only claims "reported" for
+  // true; false says so, because a comforting message that is not true is worse than none.
+  const [reported, setReported] = useState(null);
+
+  const reset = () => { setPhase("idle"); setResults([]); setNotice(null); setReported(null); setProgress({ i: 0, total: 0, name: "" }); };
   const clearHistory = () => { saveHistory([]); setHistory([]); };
 
   const onFileChange = (e) => { if (e.target.files?.length) runBatch(e.target.files); e.target.value = ""; };
@@ -648,12 +707,12 @@ export default function App() {
         {phase === "idle"       && <UploadZone dragging={dragging} onPickFile={() => inputRef.current?.click()} history={history} onClearHistory={clearHistory} t={t} />}
         {phase === "processing" && <ProcessingState progress={progress} t={t} />}
         {phase === "done" && !isBatch && (
-          <SingleDoneState result={results[0]} onReset={reset} t={t}
+          <SingleDoneState result={results[0]} onReset={reset} t={t} reported={reported}
             onRedownload={() => downloadSingle(results[0])}
             onForceDownload={() => downloadForce(results[0])} />
         )}
         {phase === "done" && isBatch && (
-          <BatchDoneState results={results} successCount={successCount} t={t}
+          <BatchDoneState results={results} successCount={successCount} t={t} reported={reported}
             errorCount={errorCount} partialCount={partialCount}
             onDownloadZip={downloadZip} onDownloadSingle={downloadSingle}
             onForceDownload={downloadForce} onReset={reset} />
@@ -1072,6 +1131,29 @@ function UncheckedWarning({ result, t }) {
 // Deliberately not styled as a warning. The warnings above say something is wrong; this
 // says what you always do by hand, on every file. Two entries are on every invoice and the
 // third only when it applies, so the list is short enough to actually be read.
+// Tells the user the failure has already been passed on, so they do not have to.
+//
+// This project began with a colleague who hit an error while the maintainer was away, could
+// not act on it, and did the invoice by hand. Naming the lines that failed helped; having
+// somewhere for the problem to go is the other half of it.
+//
+// It claims nothing it cannot back up. `reported` is true only when a message actually went
+// out — not when one was attempted. If there was something to report and it did not get
+// through, this says so instead, because a reassuring message that is not true is worse than
+// no message at all.
+function ReportedNote({ reported, t }) {
+  if (reported === null || reported === undefined) return null;
+  const good = reported === true;
+  return (
+    <p style={{
+      fontSize: "0.7rem", color: good ? T.textDim : "#f59e0b",
+      margin: "0 0 0.75rem", lineHeight: 1.5, textAlign: "left",
+    }}>
+      {good ? t.reportedSent : t.reportedFailed}
+    </p>
+  );
+}
+
 function StillToDo({ result, t }) {
   if (!result || result.error) return null;
 
@@ -1190,7 +1272,7 @@ function SilentGapWarning({ unparsedItemNos, count, t }) {
 // left the call to it standing, and converting a single file threw ReferenceError and
 // blanked the page. Nothing in this file was rendered by any test, so nothing caught it.
 // test-screens.mjs renders each of these with realistic props. See that file.
-export function SingleDoneState({ result, onReset, onRedownload, onForceDownload, t }) {
+export function SingleDoneState({ result, onReset, onRedownload, onForceDownload, reported, t }) {
   const isError   = !!result.error;
   const isPartial = result.isPartial;
   // `isOk` used to mean "did not throw", which drew the green tick over results
@@ -1245,6 +1327,7 @@ export function SingleDoneState({ result, onReset, onRedownload, onForceDownload
         )}
       </div>
 
+      <ReportedNote reported={reported} t={t} />
       {isPartial && <PartialWarning result={result} onForceDownload={onForceDownload} t={t} />}
 
       {/* Rendered for BOTH outcomes. These used to sit inside the success block
@@ -1294,7 +1377,7 @@ export function BatchMissingItems({ result, t }) {
   );
 }
 
-export function BatchDoneState({ results, successCount, errorCount, partialCount, onDownloadZip, onDownloadSingle, onForceDownload, onReset, t }) {
+export function BatchDoneState({ results, successCount, errorCount, partialCount, onDownloadZip, onDownloadSingle, onForceDownload, onReset, reported, t }) {
   const allOk = errorCount === 0 && partialCount === 0;
   return (
     <div style={{ padding: "0.5rem 0" }}>
@@ -1312,6 +1395,7 @@ export function BatchDoneState({ results, successCount, errorCount, partialCount
         <p style={{ fontWeight: 600, color: T.text }}>
           {t.filesOf(successCount, results.length)}
         </p>
+      <ReportedNote reported={reported} t={t} />
         {(errorCount > 0 || partialCount > 0) && (
           <p style={{ fontSize: "0.8rem", color: T.textDim, marginTop: "0.25rem" }}>
             {errorCount > 0   && t.failedCount(errorCount)}

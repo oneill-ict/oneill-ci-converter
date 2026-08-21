@@ -231,6 +231,32 @@ console.log("\n  het lijstje 'nog te doen'");
 }
 
 fs.rmSync(out, { force: true });
+
+console.log("\n  de melding aan de gebruiker liegt niet");
+{
+  const base = { ...clean, isPartial: true, qtyOk: false, qty: 288, expectedQty: 291 };
+  const withProp = (reported) => render(React.createElement(app.SingleDoneState, {
+    result: base, onReset: noop, onRedownload: noop, onForceDownload: noop, reported, t: T }));
+
+  ok("gemeld → zegt dat het gemeld is",   withProp(true).includes(T.reportedSent));
+  ok("niet gemeld → zegt dát ook",        withProp(false).includes(T.reportedFailed));
+  ok("en dan niet 'gemeld'",             !withProp(false).includes(T.reportedSent));
+  // null means there was nothing to report, or it is not known yet. Saying nothing is the
+  // only honest option there.
+  ok("onbekend → zwijgt",                !withProp(null).includes(T.reportedSent)
+                                      && !withProp(null).includes(T.reportedFailed));
+  ok("prop afwezig → zwijgt ook",
+     !render(React.createElement(app.SingleDoneState, { result: base, onReset: noop,
+       onRedownload: noop, onForceDownload: noop, t: T })).includes(T.reportedSent));
+
+  for (const loc of ["NL", "EN"]) {
+    const L2 = app.i18n[loc];
+    ok(`${loc} heeft beide teksten`,
+       typeof L2.reportedSent === "string" && typeof L2.reportedFailed === "string");
+  }
+}
+
+fs.rmSync(out, { force: true });
 console.log(`
 ${pass} geslaagd, ${fail} gefaald`);
 process.exit(fail ? 1 : 0);
