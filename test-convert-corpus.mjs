@@ -101,6 +101,14 @@ for (const file of find(BASE).sort()) {
     problems.push(`${name}: workbook onleesbaar — ${e.message}`);
   }
 
+  // The response headers the client depends on. test-screens.mjs renders the screens with a
+  // currency handed to it directly, so it is silent about whether the header carrying that
+  // currency is ever sent — and it was not: X-Currency sat in Access-Control-Expose-Headers
+  // for a change before anything set it, so every screen fell back to "CHF" on invoices that
+  // are mostly EUR. A test that renders a component proves nothing about its plumbing.
+  const currencyHeader = h["x-currency"];
+  const headerOk = /^(CHF|EUR|GBP|USD|CAD)$/.test(currencyHeader || "");
+
   const okQty   = !expQty   || qty   === expQty;
   const okTotal = !expTotal || Math.abs(+total - +expTotal) <= 0.5;
 
@@ -147,12 +155,13 @@ for (const file of find(BASE).sort()) {
   ].filter(Boolean).join(" ");
 
   if (!checked) unchecked++;
-  if (okQty && okTotal && endTotalOk && sheetRows) {
+  if (okQty && okTotal && endTotalOk && headerOk && sheetRows) {
     console.log(`  ok   ${pad(name, 44)} ${pad(lineCount + " regels", 12)} qty=${qty}/${expQty} total=${total}/${expTotal}${endDetail} ${extra}`);
     pass++;
   } else {
     console.log(`  FAIL ${pad(name, 44)} ${pad(lineCount + " regels", 12)} qty=${qty}/${expQty} total=${total}/${expTotal} ${extra}`);
-    problems.push(`${name}: qty ${qty}/${expQty}, total ${total}/${expTotal}${endDetail}${endTotalOk ? "" : "  EINDTOTAAL WIJKT AF"}`);
+    problems.push(`${name}: qty ${qty}/${expQty}, total ${total}/${expTotal}${endDetail}` +
+      `${endTotalOk ? "" : "  EINDTOTAAL WIJKT AF"}${headerOk ? "" : `  X-CURRENCY="${currencyHeader}"`}`);
     fail++;
   }
 }
