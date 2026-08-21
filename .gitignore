@@ -32,3 +32,13 @@ test-realparse.mjs
 AUDIT.md
 PROJECT-BLUEPRINT.md
 *.pdf
+_screens-bundle.mjs
+
+# My own scratch probes. Named with a leading underscore so one pattern covers them, and
+# so `git add -A` can never sweep them in again — it has three times now.
+_*.mjs
+_*.txt
+_*.js
+_*.jsx
+_*.md
+.claude/

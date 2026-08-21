@@ -182,8 +182,12 @@ console.log("\n  twee cellen aan elkaar geplakt in een regel");
   // a glued quantity-and-price cell parses to 601.04, and a quantity of pieces is
   // always whole.
   ok("de geplakte regel wordt geweigerd, niet gesplitst", o.skipped.length === 1, verdict(o));
-  ok("met het aantal in de reden", /geen heel getal/.test(o.skipped[0]?.reason ?? ""),
+  // The reason is a stable key for the UI to translate; the offending value rides along in
+  // `detail`, because a key cannot carry a number.
+  ok("de reden is de juiste sleutel", o.skipped[0]?.reason === "fractional quantity",
      o.skipped[0]?.reason ?? "");
+  ok("en het aantal staat in detail", /^\d+\.\d+$/.test(o.skipped[0]?.detail ?? ""),
+     o.skipped[0]?.detail ?? "(leeg)");
 }
 
 // ── the case where the property does not hold at this level ─────────────────
@@ -205,5 +209,83 @@ console.log("\n  Quantity en Discount van kop verwisseld");
      `aantal ${o.agree.quantity} tegen ${footer.qty}`);
 }
 
-console.log(`\n${pass} geslaagd, ${fail} gefaald`);
+
+// ── A template built from scratch, not a mutation of the one that passes ─────
+// Every invoice in the corpus is one layout, so mutating it only ever asks "what if this
+// moved". These two ask the harder question: what happens to a table this reader has never
+// seen, laid out the way another supplier's ERP might lay it out.
+//
+// Built by hand rather than derived, so it cannot inherit anything that makes the corpus
+// work: different column order, different page width, different row spacing.
+const L2 = (y, ...pairs) => ({ page: 1, y, runs: pairs.map(([x, text]) => ({ x, text })) });
+
+console.log("\n  een ander sjabloon met dezelfde koppen, maar de kolommen in een andere orde");
+{
+  // Quantity before the description, total before the price, on a narrower page.
+  const header = L2(700,
+    [10, "Item No."], [60, "Quantity"], [95, "Item"], [260, "Colour"], [330, "Colour no."],
+    [380, "Item group"], [430, "Country of origin"], [500, "Tariff No."],
+    [560, "Nett weight"], [610, "Total"], [670, "Price per piece"], [720, "Discount"]);
+  const row = (n, qty, price, total) => L2(688 - n * 9,
+    [10, `21${n}0055`], [60, String(qty)], [95, "SOME PRODUCT NAME"], [260, "Black Out"],
+    [330, "19010"], [380, "Jackets"], [430, "Vietnam"], [500, "6210200090"],
+    [560, "410,00 gr"], [610, `${total.toFixed(2).replace(".", ",")} GBP`],
+    [670, `${price.toFixed(2).replace(".", ",")} GBP`], [720, "0,00 GBP"]);
+  const lines = [header, row(0, 3, 10, 30), row(1, 2, 25, 50), row(2, 5, 4, 20), row(3, 1, 9, 9)];
+
+  const r = readItemRows(lines);
+  const agree = agreesWithFooter(
+    r.rows.map(x => ({ quantity: x.quantity, total: x.total, price: x.price, discount: x.discount })),
+    { qty: 11, total: 109 });
+  ok("alle vier de regels gelezen", r.rows.length === 4, `${r.rows.length} regels`);
+  ok("aantal klopt", agree.qtyOk, `${agree.quantity} van 11`);
+  ok("totaal klopt", agree.totalOk, `${agree.total} van 109`);
+  ok("de valuta komt uit de cellen", r.currency === "GBP", String(r.currency));
+  ok("de kolomorde maakt niets uit", r.rows[0].itemNo === "2100055" && r.rows[0].quantity === 3,
+     `${r.rows[0].itemNo} / ${r.rows[0].quantity}`);
+}
+
+console.log("\n  een ander sjabloon met andere koptekst — dat moet weigeren, niet half lezen");
+{
+  // "HS Code" and "Amount" instead of "Tariff No." and "Total": plausible wording from
+  // another ERP, and not something this reader knows.
+  const header = L2(700,
+    [10, "Article"], [60, "Description"], [300, "Qty"], [340, "HS Code"],
+    [400, "Weight"], [450, "Unit price"], [510, "Amount"]);
+  const row = (n) => L2(688 - n * 9,
+    [10, `31${n}0055`], [60, "SOME PRODUCT"], [300, "4"], [340, "6210200090"],
+    [400, "410,00 gr"], [450, "10,00 GBP"], [510, "40,00 GBP"]);
+  const lines = [header, row(0), row(1), row(2), row(3)];
+
+  const r = readItemRows(lines);
+  ok("weigert", r.rows.length === 0, `${r.rows.length} regels`);
+  ok("en niets half gelezen", r.skipped.length === 0, `${r.skipped.length} overgeslagen`);
+
+  // It cannot say which columns are missing here, and that is worth stating rather than
+  // asserting away: a row needs at least eight cells to count as an item row at all, which
+  // is what separates them from the two-and-three-cell tariff subtotal rows underneath. This
+  // template has seven columns, so no row is ever recognised, so there is no grid to find a
+  // gap in. The user gets "no invoice lines found — is this an O'Neill Commercial Invoice?",
+  // which is true and actionable, but less precise than the named-column refusal a
+  // twelve-column template with one bad header produces.
+  ok("kolommen ontbreken wordt hier niet gemeld", r.missingColumns == null,
+     JSON.stringify(r.missingColumns ?? null));
+
+  // The precise refusal, for contrast: same widths as the real template, one header renamed.
+  const wide = (y, ...pairs) => ({ page: 1, y, runs: pairs.map(([x, t2]) => ({ x, text: t2 })) });
+  const hdr2 = wide(700, [10, "Item No."], [60, "Item"], [230, "Colour"], [330, "Colour no."],
+    [380, "Item group"], [430, "Country of origin"], [500, "HS Code"], [560, "Nett weight"],
+    [610, "Quantity"], [660, "Price per piece"], [710, "Discount"], [760, "Total"]);
+  const row2 = (n) => wide(688 - n * 9, [10, `41${n}0055`], [60, "SOME PRODUCT"],
+    [230, "Black Out"], [330, "19010"], [380, "Jackets"], [430, "Vietnam"], [500, "6210200090"],
+    [560, "410,00 gr"], [610, "4"], [660, "10,00 GBP"], [710, "0,00 GBP"], [760, "40,00 GBP"]);
+  const r2 = readItemRows([hdr2, row2(0), row2(1), row2(2), row2(3)]);
+  ok("met twaalf kolommen noemt hij de ontbrekende wel",
+     Array.isArray(r2.missingColumns) && r2.missingColumns.includes("tariffNo"),
+     JSON.stringify(r2.missingColumns ?? null));
+  ok("en levert ook dan niets af", r2.rows.length === 0, `${r2.rows.length}`);
+}
+
+console.log(`
+${pass} geslaagd, ${fail} gefaald`);
 process.exit(fail ? 1 : 0);
