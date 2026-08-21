@@ -305,6 +305,16 @@ export async function buildExcel(invoice) {
   setCell(9, 3, invoice.date);
 
   // Row 10: Order / Invoice number
+  //
+  // The date-derived suggestion wins over the invoice's own order number, and that is
+  // deliberate: this is the logistics number the shipment is filed under, not the ERP order
+  // reference. An audit flagged it as the invoice missing its own reference, and it was
+  // confirmed as intended — keep it as it is.
+  //
+  // This line has not changed since the first commit, and the positional rewrite did not
+  // change what it renders either: its only input is invoice.date, and that reads identically
+  // to the old regex on all 45 corpus invoices. test-workbook.mjs pins the behaviour so a
+  // well-meant "fix" fails a test instead of quietly changing what a customs document says.
   setCell(10, 1, "Order number / Invoice nr.:", { font: boldFont });
   setCell(10, 3, orderSuggestion || invoice.orderNumber);
 
@@ -312,11 +322,17 @@ export async function buildExcel(invoice) {
   setCell(11, 1, "Delivery terms:", { font: boldFont });
   setCell(11, 3, invoice.deliveryTerms || "DDP");
 
-  // Row 12: Nett weight
+  // Rows 12 and 13: the weights.
+  //
+  // "Nett weight" is filled from the PDF's "Gross weight:" field, and "Gross weight" is left
+  // empty for someone to complete by hand. That reads like a mix-up and an audit flagged it
+  // as one — it is not. This is what the O'Neill logistics template asks for: the figure the
+  // invoice states is the nett weight for this form, and the gross weight is added later once
+  // packaging is known. For customs the distinction is not cosmetic, so it is written down
+  // here rather than left to look like a bug, and pinned by a test.
   setCell(12, 1, "Nett weight:", { font: boldFont });
   setCell(12, 3, nettWeightStr);
 
-  // Row 13: Gross weight — empty, fill in manually
   setCell(13, 1, "Gross weight:", { font: boldFont });
   setCell(13, 3, "");
 
