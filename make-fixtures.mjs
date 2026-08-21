@@ -34,7 +34,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { extractLines, groupIntoLines, readItemRows } from "./lib/invoice-rows.mjs";
+import { groupIntoLines, readItemRows } from "./lib/invoice-rows.mjs";
 import { readFooter } from "./lib/invoice-footer.mjs";
 
 const pdfParse = createRequire(import.meta.url)("pdf-parse");

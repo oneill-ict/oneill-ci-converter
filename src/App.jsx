@@ -1,4 +1,4 @@
-﻿import React, { useState, useRef, useCallback, useEffect } from "react";
+﻿import React, { useState, useRef, useCallback } from "react";
 import { Upload, CheckCircle2, AlertCircle, Loader2, FileDown, Archive, AlertTriangle, Clock, Trash2 } from "lucide-react";
 import JSZip from "jszip";
 import { T } from "./lib/theme.js";
@@ -869,9 +869,6 @@ function humanReason(raw, t) {
 function PartialWarning({ result, onForceDownload, t }) {
   const [showDetails, setShowDetails] = React.useState(false);
 
-  // unparsedItemNos: item numbers visible in PDF but missing from output (no
-  // reason known). Always bare strings — normalised in convertFile.
-  const unparsed = result.unparsedItemNos || [];
   // missedRows: blocks that were found but failed to parse (with reason).
   // "???" means the line was found but its item number could not be read at all —
   // the worst case, and previously the only one filtered out of this list.
@@ -987,6 +984,48 @@ function PartialWarning({ result, onForceDownload, t }) {
         {result.blob ? t.redownload : t.downloadAnyway}
       </button>
     </div>
+  );
+}
+
+// The diagnostic headers were unreadable. Say so: an empty list would otherwise read as
+// "nothing to report" — the same appearance as a clean conversion.
+function DegradedWarning({ result, t }) {
+  if (!result.degraded) return null;
+  return (
+    <div style={{
+      background: T.panelDeep, border: `1px solid #5a4400`, borderRadius: 8,
+      padding: "0.6rem 0.85rem", marginBottom: "0.75rem",
+      display: "flex", alignItems: "flex-start", gap: "0.5rem",
+    }}>
+      <AlertTriangle size={13} color="#c78c00" style={{ marginTop: 2, flexShrink: 0 }} />
+      <p style={{ fontSize: "0.72rem", color: T.textDim, lineHeight: 1.5, margin: 0 }}>{t.degradedNote}</p>
+    </div>
+  );
+}
+
+// Every warning a result can carry, in one place. Each of these used to be placed by hand
+// per screen, and each time a new screen appeared they were wired into only one of them.
+// A screen renders this component and gets all of them, including any added later.
+//
+// This was deleted by accident. The change that removed the uncertain-quantity warning cut
+// from that component's comment down to the next one, and this wrapper sat in between — so
+// the call in SingleDoneState was left pointing at nothing. Converting a single file threw
+// ReferenceError and, with no error boundary, blanked the screen. The build did not catch
+// it because esbuild leaves an unknown identifier as a global reference, and my own browser
+// check did not catch it because I looked at the upload screen and never converted a file.
+//
+// Two of these three were also left unrendered by that same cut: NoWeightWarning and
+// SilentGapWarning still existed but nothing called them, so those warnings were invisible
+// even on the screens that did render. DegradedWarning was gone entirely while trustOf kept
+// marking files "degraded" — a filename marker with nothing on screen explaining it.
+function ResultWarnings({ result, t }) {
+  if (!result) return null;
+  return (
+    <>
+      <DegradedWarning result={result} t={t} />
+      <SilentGapWarning unparsedItemNos={result.unparsedItemNos} count={result.unparsedCount} t={t} />
+      <NoWeightWarning result={result} t={t} />
+    </>
   );
 }
 

@@ -30,13 +30,13 @@ jobs:
 
       - run: npm ci
 
-      # Every source file has to at least parse. Cheap, and it catches a syntax
-      # error in a file no test happens to import.
-      - name: syntax check
-        run: |
-          for f in api/*.js lib/*.mjs src/lib/*.js run-tests.mjs; do
-            node --check "$f"
-          done
+      # Two rules, and both have already caught something the build could not. A change
+      # deleted a component and left <ResultWarnings /> behind: esbuild leaves an unknown
+      # identifier as a global reference, so `npm run build` succeeded, the bundle
+      # deployed, and converting a single file threw ReferenceError and blanked the page.
+      # react/jsx-no-undef sees it; plain no-undef does not, because a JSX element name is
+      # not an identifier reference to it.
+      - run: npm run lint
 
       - run: npm test
 

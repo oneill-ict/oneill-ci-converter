@@ -71,7 +71,6 @@ for (const file of find(BASE).sort()) {
   const total     = h["x-validation-total"];
   const expTotal  = h["x-validation-expected-total"];
   const checked   = h["x-validation-checked"] === "1";
-  const valid     = h["x-validation-status"] ?? h["x-validation-valid"];
 
   // The workbook has to open. ExcelJS reading its own output back is the cheapest
   // check that a NaN or a bad formula did not make it unopenable.
