@@ -9842,6 +9842,32 @@
   },
   {
    "page": 6,
+   "y": 117.34,
+   "runs": [
+    {
+     "x": 16.42,
+     "text": "6110209100"
+    },
+    {
+     "x": 16.42,
+     "text": "Der Ausführer der Waren, auf die sich diese Handelspapiere beziehen, erklärt, dass diese Waren, soweit nicht anders angegeben, präferenzbegünstigte Türkische Ursprungswaren sind."
+    },
+    {
+     "x": 128.92,
+     "text": "137,15CHF"
+    },
+    {
+     "x": 360.12,
+     "text": "2400 gr"
+    },
+    {
+     "x": 592.61,
+     "text": "2400 gr"
+    }
+   ]
+  },
+  {
+   "page": 6,
    "y": 103.84,
    "runs": [
     {
