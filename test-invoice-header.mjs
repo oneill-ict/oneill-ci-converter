@@ -14,7 +14,7 @@
 // Run: node test-invoice-header.mjs
 
 import { readHeader } from "./lib/invoice-header.mjs";
-import { readFooter } from "./lib/invoice-footer.mjs";
+import { readFooter, agreesWithFooter } from "./lib/invoice-footer.mjs";
 
 let pass = 0, fail = 0;
 const eq = (label, got, want) => {
@@ -206,5 +206,57 @@ console.log("\n  geen footer, geen getallen");
   eq("totaal null", f.total, null);
 }
 
-console.log(`\n${pass} geslaagd, ${fail} gefaald`);
+
+console.log("\n  verzendkosten en de reconciliatie van het eindtotaal");
+{
+  // Two corpus invoices print a Shipping costs line between Goods total and Subtotal. It
+  // was not in the model at all, so it fell out of the workbook's end total: EUR 443.38 on
+  // one and EUR 155.22 on the other, on a customs document.
+  const f = readFooter(footerLines(
+    L(100, [16, "Goods total"], [625, "226"], [775, "8.429,10 CHF"]),
+    L(90,  [16, "Shipping costs"], [775, "443,40 CHF"]),
+    L(80,  [16, "Subtotal"],    [775, "8.872,50 CHF"]),
+    L(70,  [16, "VAT"],         [775, "718,68 CHF"]),
+    L(60,  [16, "Total"],       [775, "9.591,18 CHF"])));
+  eq("verzendkosten gelezen", f.shipping,   443.4);
+  eq("subtotaal gelezen",     f.subtotal,   8872.5);
+  eq("eindtotaal gelezen",    f.grandTotal, 9591.18);
+
+  // The invoice's own arithmetic, which holds on all 42 corpus invoices:
+  //   Total = Goods total - Discount + Shipping costs + VAT
+  const a = agreesWithFooter([{ quantity: 226, total: 8429.10, price: null, discount: 0 }], f);
+  eq("eindtotaal gereconcilieerd", a.endTotalOk, true);
+  eq("en het is ook echt gecontroleerd", a.endTotalChecked, true);
+}
+
+console.log("\n  een gemiste component wordt zichtbaar in plaats van stil");
+{
+  // The same invoice with the shipping line unread — the state this converter shipped in.
+  const f = readFooter(footerLines(
+    L(100, [16, "Goods total"], [625, "226"], [775, "8.429,10 CHF"]),
+    L(80,  [16, "Subtotal"],    [775, "8.872,50 CHF"]),
+    L(70,  [16, "VAT"],         [775, "718,68 CHF"]),
+    L(60,  [16, "Total"],       [775, "9.591,18 CHF"])));
+  const a = agreesWithFooter([{ quantity: 226, total: 8429.10, price: null, discount: 0 }], f);
+  eq("de goederentotaal-as blijft groen", a.totalOk, true);
+  eq("maar het eindtotaal valt om",       a.endTotalOk, false);
+  eq("met het verschil erbij (in centen)", a.endGap, 44340);
+}
+
+console.log("\n  100% korting: het eindtotaal is nul en dat is geen ontbrekende waarde");
+{
+  const f = readFooter(footerLines(
+    L(100, [16, "Goods total"], [625, "4"], [775, "399,98 EUR"]),
+    L(90,  [16, "Discount"],    [775, "399,98 EUR"]),
+    L(80,  [16, "Subtotal"],    [775, "0,00 EUR"]),
+    L(70,  [16, "VAT"],         [775, "0,00 EUR"]),
+    L(60,  [16, "Total"],       [775, "0,00 EUR"])));
+  eq("eindtotaal is 0, niet null", f.grandTotal, 0);
+  const a = agreesWithFooter([{ quantity: 4, total: 399.98, price: null, discount: 0 }], f);
+  eq("en het klopt", a.endTotalOk, true);
+  eq("de as is gecontroleerd", a.endTotalChecked, true);
+}
+
+console.log(`
+${pass} geslaagd, ${fail} gefaald`);
 process.exit(fail ? 1 : 0);

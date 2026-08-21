@@ -30,9 +30,10 @@ const i18n = {
     newInvoices:   "Nieuwe facturen",
     checkResults:  "Controleer de resultaten",
     mismatchTitle: (axis) =>
-      axis === "total"   ? "Bedrag komt niet overeen met de factuur"
-    : axis === "unknown" ? "Controle mislukt — reden onbekend"
-    :                      "Aantal stuks komt niet overeen",
+      axis === "total"    ? "Bedrag komt niet overeen met de factuur"
+    : axis === "endTotal" ? "Eindtotaal komt niet overeen met de factuur"
+    : axis === "unknown"  ? "Controle mislukt — reden onbekend"
+    :                       "Aantal stuks komt niet overeen",
    mismatchFound: "Gevonden:",
     mismatchExp:   "Verwacht:",
     missedItemsLabel: "Ontbrekend in export",
@@ -115,6 +116,7 @@ const i18n = {
     download:      "Download",
     anyway:        "Toch",
     silentGapNote: (n) => `Let op: ${n} itemnummer(s) uit de PDF zijn niet in de export opgenomen —`,
+    uncheckedAdvice: "tel het aantal en het totaal zelf na tegen de PDF, of stuur de factuur door.",
     degradedNote:  "De controlegegevens konden niet worden uitgelezen. Het Excel is aangemaakt, maar de waarschuwingen hieronder zijn mogelijk onvolledig — controleer dit bestand handmatig.",
     noWeightNote: (n) => n === 1
       ? "Let op: bij 1 regel staat geen brutogewicht op de factuur. Die cel blijft leeg in het Excel — vul hem handmatig aan:"
@@ -142,9 +144,10 @@ const i18n = {
     newInvoices:   "New invoices",
     checkResults:  "Check the results",
     mismatchTitle: (axis) =>
-      axis === "total"   ? "Amount does not match the invoice"
-    : axis === "unknown" ? "Validation failed — reason unknown"
-    :                      "Piece count mismatch",
+      axis === "total"    ? "Amount does not match the invoice"
+    : axis === "endTotal" ? "End total does not match the invoice"
+    : axis === "unknown"  ? "Validation failed — reason unknown"
+    :                       "Piece count mismatch",
    mismatchFound: "Found:",
     mismatchExp:   "Expected:",
     missedItemsLabel: "Missing from export",
@@ -224,6 +227,7 @@ const i18n = {
     download:      "Download",
     anyway:        "Anyway",
     silentGapNote: (n) => `Note: ${n} item number(s) from the PDF were not included in the export —`,
+    uncheckedAdvice: "check the quantity and total against the PDF yourself, or forward the invoice.",
     degradedNote:  "The validation data could not be read. The Excel was created, but the warnings below may be incomplete — check this file by hand.",
     noWeightNote: (n) => n === 1
       ? "Note: 1 line has no gross weight on the invoice. That cell is left empty in the Excel — fill it in by hand:"
@@ -307,6 +311,7 @@ async function convertFile(file, force = false, t) {
       // Which axis failed, straight from the server rather than inferred.
       e.qtyOk            = err.qtyOk;
       e.totalOk          = err.totalOk;
+      e.endTotalOk       = err.endTotalOk;
       throw e;
     }
     throw new Error(err.error || httpErrorMessage(res.status, t));
@@ -445,7 +450,7 @@ export default function App() {
             unparsedCount: (e.unparsedItemNos || []).length,
             noWeightItems: e.noWeightLines || [],
             noWeightCount: (e.noWeightLines || []).length,
-            qtyOk: e.qtyOk, totalOk: e.totalOk,
+            qtyOk: e.qtyOk, totalOk: e.totalOk, endTotalOk: e.endTotalOk,
             preview: [], error: null, isPartial: true, file,
           };
           try {
@@ -1003,6 +1008,32 @@ function DegradedWarning({ result, t }) {
   );
 }
 
+// A file can be marked untrusted in its own name and say nothing on screen about why.
+// DegradedWarning covers unreadable diagnostics, but "unchecked" and "nodata" had no panel
+// at all: trustOf marks them, exportNameFor writes "(NIET GECONTROLEERD)" into the
+// filename, and the screen showed a plain download. Same shape of gap, one layer over.
+//
+// unchecked — the invoice's "Goods total" line was not found, so there was nothing to
+//             compare the parsed figures against.
+// nodata    — the validation headers never arrived, so the conversion cannot be vouched
+//             for even though the response was a 200.
+function UncheckedWarning({ result, t }) {
+  const { kind } = trustOf(result);
+  if (kind !== "unchecked" && kind !== "nodata") return null;
+  return (
+    <div style={{
+      background: T.panelDeep, border: `1px solid #5a4400`, borderRadius: 8,
+      padding: "0.6rem 0.85rem", marginBottom: "0.75rem",
+      display: "flex", alignItems: "flex-start", gap: "0.5rem",
+    }}>
+      <AlertTriangle size={13} color="#c78c00" style={{ marginTop: 2, flexShrink: 0 }} />
+      <p style={{ fontSize: "0.72rem", color: T.textDim, lineHeight: 1.5, margin: 0 }}>
+        {t.trustReason[kind]} — {t.uncheckedAdvice}
+      </p>
+    </div>
+  );
+}
+
 // Every warning a result can carry, in one place. Each of these used to be placed by hand
 // per screen, and each time a new screen appeared they were wired into only one of them.
 // A screen renders this component and gets all of them, including any added later.
@@ -1023,6 +1054,7 @@ function ResultWarnings({ result, t }) {
   return (
     <>
       <DegradedWarning result={result} t={t} />
+      <UncheckedWarning result={result} t={t} />
       <SilentGapWarning unparsedItemNos={result.unparsedItemNos} count={result.unparsedCount} t={t} />
       <NoWeightWarning result={result} t={t} />
     </>

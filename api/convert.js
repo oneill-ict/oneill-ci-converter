@@ -109,6 +109,7 @@ function parseInvoice(lines) {
   const footer = readFooter(lines);
   invoice.creditNote      = footer.creditNote;
   invoice.invoiceDiscount = footer.discount;
+  invoice.shippingCosts   = footer.shipping;
   invoice.vat             = footer.vat;
   const expectedQty   = footer.qty;
   const expectedTotal = footer.total;
@@ -146,9 +147,9 @@ function parseInvoice(lines) {
     invoice.items.map(i => ({
       quantity: i.quantity, total: i.total, price: i.pricePerPiece, discount: i.discount,
     })),
-    { qty: expectedQty, total: expectedTotal },
+    footer,
   );
-  const { quantity: parsedQty, total: parsedTotal, qtyOk, totalOk } = check;
+  const { quantity: parsedQty, total: parsedTotal, qtyOk, totalOk, endTotalOk } = check;
 
   // Lines with no per-line gross weight. One template states it only in the
   // header, so an empty cell is a real case, not a parse failure — but it has to
@@ -168,17 +169,22 @@ function parseInvoice(lines) {
   }));
 
   invoice._validation = {
-    valid: totalOk && qtyOk && !missingColumns,
+    valid: totalOk && qtyOk && endTotalOk && !missingColumns,
     noWeightLines,
     // `valid` alone is ambiguous: totalOk/qtyOk default to true when there is
     // nothing to compare against. `checked` says whether a comparison actually
     // happened, per axis, because the two guard different failures — the total
     // catches dropped or duplicated lines, the quantity catches a wrong line.
-    qtyChecked:   expectedQty   !== null,
-    totalChecked: expectedTotal !== null,
-    checked: expectedQty !== null && expectedTotal !== null,
+    qtyChecked:      check.qtyChecked,
+    totalChecked:    check.totalChecked,
+    endTotalChecked: check.endTotalChecked,
+    checked: check.qtyChecked && check.totalChecked,
     parsedQty, parsedTotal, expectedQty, expectedTotal,
-    totalOk, qtyOk,
+    totalOk, qtyOk, endTotalOk,
+    // What the workbook's Total will say against what the invoice prints. A mismatch means
+    // a component of the summary block was misread — the failure that hid fifteen
+    // discounts and two shipping-cost lines behind a green check.
+    endTotal: check.endTotal, printedEndTotal: check.printedEndTotal,
     missedRows,
     unparsedItemNos: [...new Map(missedRows.map(r => [r.itemNo, r])).values()],
     // Nothing reports an unreconciled quantity split any more, because nothing
@@ -355,7 +361,6 @@ export async function buildExcel(invoice) {
   const goodsTotalQty    = invoice.items.reduce((s, it) => s + it.quantity, 0);
   const goodsTotalAmount = round2(invoice.items.reduce((s, it) => s + it._total, 0));
   const invoiceDiscount  = invoice.invoiceDiscount || 0;
-  const grandTotal       = round2(goodsTotalAmount - invoiceDiscount + invoice.vat);
 
   const lastDataRow  = DATA_START + invoice.items.length - 1;
 
@@ -414,46 +419,75 @@ export async function buildExcel(invoice) {
   });
 
   // ── Summary rows ──────────────────────────────────────────────────────
+  //
+  // Built as a list rather than as offsets from summaryStart. It used to be
+  // `summaryStart + (hasDiscount ? 3 : 2)` and friends — four expressions that all had to
+  // be kept in agreement, and adding the Shipping costs line would have made it eight.
+  // Duplicated offsets like these have already cost this workbook once: the legal footer's
+  // start row was computed a second way and wrote over the tariff check rows.
+  //
+  // Discount subtracts and Shipping costs adds, which is what the invoice's own arithmetic
+  // says on all 42 corpus invoices:
+  //   Subtotal = Goods total - Discount + Shipping costs
+  //   Total    = Subtotal + VAT
 
   const summaryStart = lastDataRow + 2;
+  const shipping = invoice.shippingCosts || 0;
 
-  const gtRow = summaryStart;
-  setCell(gtRow, 1, "Goods total", { font: boldFont, border: summaryBorder });
-  const qtySum  = ws.getCell(gtRow, 8);
-  qtySum.value  = { formula: `SUM(H${DATA_START}:H${lastDataRow})`, result: goodsTotalQty };
-  qtySum.numFmt = "#,##0"; qtySum.font = boldFont; qtySum.alignment = { horizontal: "right" }; qtySum.border = summaryBorder;
-  const amtSum  = ws.getCell(gtRow, 11);
-  amtSum.value  = { formula: `SUM(K${DATA_START}:K${lastDataRow})`, result: goodsTotalAmount };
-  amtSum.numFmt = "#,##0.00"; amtSum.font = boldFont; amtSum.alignment = { horizontal: "right" }; amtSum.border = summaryBorder;
+  const parts = [
+    { key: "goods",    label: "Goods total", sign: +1,
+      qty:    { formula: `SUM(H${DATA_START}:H${lastDataRow})`, result: goodsTotalQty },
+      amount: { formula: `SUM(K${DATA_START}:K${lastDataRow})`, result: goodsTotalAmount },
+      border: true, bold: true },
+    invoiceDiscount > 0 && { key: "discount", label: "Discount", sign: -1,
+      amount: { value: invoiceDiscount }, bold: true },
+    shipping > 0 && { key: "shipping", label: "Shipping costs", sign: +1,
+      amount: { value: shipping }, bold: true },
+  ].filter(Boolean);
 
-  const hasDiscount = invoiceDiscount > 0;
-  const discRow = hasDiscount ? summaryStart + 1 : null;
-  if (hasDiscount) {
-    setCell(discRow, 1, "Discount", { font: boldFont });
-    const dCell    = ws.getCell(discRow, 11);
-    dCell.value    = invoiceDiscount;
-    dCell.numFmt   = "#,##0.00"; dCell.font = boldFont; dCell.alignment = { horizontal: "right" };
+  const rowOf = {};
+  parts.forEach((p, i) => { rowOf[p.key] = summaryStart + i; });
+
+  for (const p of parts) {
+    const r = rowOf[p.key];
+    setCell(r, 1, p.label, { font: boldFont, ...(p.border ? { border: summaryBorder } : {}) });
+    if (p.qty) {
+      const c = ws.getCell(r, 8);
+      c.value = p.qty; c.numFmt = "#,##0"; c.font = boldFont;
+      c.alignment = { horizontal: "right" };
+      if (p.border) c.border = summaryBorder;
+    }
+    const c = ws.getCell(r, 11);
+    c.value = "value" in p.amount ? p.amount.value : p.amount;
+    c.numFmt = "#,##0.00"; c.font = boldFont; c.alignment = { horizontal: "right" };
+    if (p.border) c.border = summaryBorder;
   }
 
-  const stRow  = summaryStart + (hasDiscount ? 2 : 1);
+  const gtRow = rowOf.goods;
+
+  // Subtotal as a formula over whichever component rows exist, so the workbook shows the
+  // sum rather than a number this converter asserts.
+  const stRow = summaryStart + parts.length;
+  const subtotalResult = round2(goodsTotalAmount - invoiceDiscount + shipping);
+  const subtotalFormula = parts
+    .map(p => `${p.sign < 0 ? "-" : "+"}K${rowOf[p.key]}`)
+    .join("")
+    .replace(/^\+/, "");
   setCell(stRow, 1, "Subtotal", { font: boldFont });
   const stCell = ws.getCell(stRow, 11);
-  const subtotalResult = round2(goodsTotalAmount - invoiceDiscount);
-  stCell.value  = hasDiscount
-    ? { formula: `K${gtRow}-K${discRow}`, result: subtotalResult }
-    : { formula: `K${gtRow}`, result: goodsTotalAmount };
+  stCell.value  = { formula: subtotalFormula, result: subtotalResult };
   stCell.numFmt = "#,##0.00"; stCell.font = boldFont; stCell.alignment = { horizontal: "right" };
 
-  const vatRow = summaryStart + (hasDiscount ? 3 : 2);
+  const vatRow = stRow + 1;
   setCell(vatRow, 1, "VAT", { font: boldFont });
   const vatCell = ws.getCell(vatRow, 11);
   vatCell.value  = invoice.vat;
   vatCell.numFmt = "#,##0.00"; vatCell.font = boldFont; vatCell.alignment = { horizontal: "right" };
 
-  const totRow = summaryStart + (hasDiscount ? 4 : 3);
+  const totRow = vatRow + 1;
   setCell(totRow, 1, "Total", { font: { name: "Arial", size: 11, bold: true } });
   const totCell2    = ws.getCell(totRow, 11);
-  totCell2.value    = { formula: `K${stRow}+K${vatRow}`, result: grandTotal };
+  totCell2.value    = { formula: `K${stRow}+K${vatRow}`, result: round2(subtotalResult + invoice.vat) };
   totCell2.numFmt   = "#,##0.00";
   totCell2.font     = { name: "Arial", size: 11, bold: true };
   totCell2.alignment = { horizontal: "right" };
@@ -700,6 +734,17 @@ async function handleConvert(req, res) {
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
+    // Without this a cross-origin caller sees only the three safelisted response headers,
+    // so every X-Validation-* value is invisible and the client reads the result as
+    // unchecked. localhost:5173 is on the allowlist precisely so the dev server can talk to
+    // the deployed function — and in that mode every conversion looked unvalidated.
+    res.setHeader("Access-Control-Expose-Headers", [
+      "Content-Disposition", "X-Validation-Qty", "X-Validation-Total",
+      "X-Validation-Expected-Qty", "X-Validation-Expected-Total",
+      "X-Validation-Checked", "X-Validation-Qty-Checked", "X-Validation-Total-Checked",
+      "X-Line-Count", "X-Currency", "X-Unparsed-Count", "X-Unparsed-Items",
+      "X-NoWeight-Count", "X-NoWeight-Items", "X-Preview", "X-Preview-Dropped",
+    ].join(", "));
   }
 
   if (req.method === "OPTIONS") {
@@ -810,6 +855,9 @@ async function handleConvert(req, res) {
       // match on an invoice whose piece count matched exactly.
       qtyOk:            v.qtyOk,
       totalOk:          v.totalOk,
+      endTotalOk:       v.endTotalOk,
+      endTotal:         v.endTotal,
+      printedEndTotal:  v.printedEndTotal,
     });
   }
 
